@@ -3,7 +3,7 @@
 <div align="center">
   <img src="gifs/i2r_clemson_ur5.png" width="100%">
   <br><br>
-  <img src="gifs/i2r_clemson_ur5.mp4" width="80%" autoplay loop>
+  <img src="gifs/i2r_clemson_ur5.gif" width="80%" autoplay loop>
 </div>
 
 ## 🤖 Overview
