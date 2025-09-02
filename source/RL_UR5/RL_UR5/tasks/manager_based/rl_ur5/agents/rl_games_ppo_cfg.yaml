@@ -4,6 +4,7 @@ params:
   env:
     clip_observations: 5
     clip_actions: 5  
+
   algo:
     name: a2c_continuous
   model:
@@ -48,16 +49,18 @@ params:
     normalize_advantage: True
     gamma: 0.99
     tau: 0.95
+
     learning_rate: 0.0005  # Standard learning rate for PPO
     lr_schedule: adaptive
     schedule_type: legacy
-    kl_threshold: 0.01
+    kl_threshold: 0.007
     score_to_win: 10000
     max_epochs: 600  # Set for approximately 45000 steps total
     save_best_after: 200
     save_frequency: 100
     print_stats: True
     grad_norm: 1.0
+
     entropy_coef: 0.0005  # Slightly lower to focus more on exploitation
     truncate_grads: True
     e_clip: 0.2

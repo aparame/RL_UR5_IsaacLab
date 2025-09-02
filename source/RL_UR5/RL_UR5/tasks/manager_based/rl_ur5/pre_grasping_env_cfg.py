@@ -302,12 +302,19 @@ class ObservationsCfg:
             params={"sensor_cfg": SceneEntityCfg("tiled_camera_left"), "data_type": "rgb"},
         )
 
+        # depth_images_left = ObsTerm(
+        #     func=mdp.image,
+        #     params={"sensor_cfg": SceneEntityCfg("tiled_camera_left"), "data_type": "depth"},
+        # )
+
         # camera_images_right = ObsTerm(
         #     func=mdp.image,
         #     params={"sensor_cfg": SceneEntityCfg("tiled_camera_right"), "data_type": "rgb"},
         # )
 
-
+                
+        def __post_init__(self):
+            self.concatenate_terms = False
 
     # observation groups
     policy: PolicyCfg = PolicyCfg()

@@ -55,6 +55,7 @@ params:
   load_path: '' # path to the checkpoint to load
   config:
     name: camera_pose_tracking_ur5
+
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
@@ -74,6 +75,7 @@ params:
     schedule_type: legacy
     kl_threshold: 0.01
     score_to_win: 10000
+
     max_epochs: 2000  # Your specified training length
     save_best_after: 50
     save_frequency: 100

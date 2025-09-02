@@ -356,6 +356,7 @@ class CurriculumCfg:
 
     joint_vel = CurrTerm(
         func=mdp.modify_reward_weight, params={"term_name": "joint_vel", "weight": -0.001, "num_steps": 1000}
+
     )
 
 
@@ -391,6 +392,7 @@ class PoseTrackingEnvCfg(ManagerBasedRLEnvCfg):
         # General settings
         self.decimation = 4
         self.episode_length_s = 4.0  # Longer episodes for pick and place
+
 
         # make a smaller scene for play
         self.scene.num_envs = 8
