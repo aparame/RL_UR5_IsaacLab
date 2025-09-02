@@ -12,6 +12,21 @@ It allows you to develop in an isolated environment, outside of the core Isaac L
 
 **Keywords:** extension, template, isaaclab
 
+## Script for training the RL algoritm
+```
+conda activate ur5_env
+python scripts/rl_games/train.py --task=Isaac-UR5-PickAndPlace-PPO --num_envs 2048 --headless --checkpoint logs/rl_games/pick_place_ur5/2025-04-09_16-52-12/nn/pick_place_ur5.pth
+
+```
+
+## Script for playing the trained RL algorithm
+
+```
+conda activate ur5_env
+python scripts/rl_games/play.py --task=Isaac-UR5-PickAndPlace-PPO --num_envs 8 --checkpoint logs/rl_games/pick_place_ur5/2025-04-09_17-00-04/nn/pick_place_ur5.pth
+
+```
+
 ## Installation
 
 - Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
@@ -114,5 +129,6 @@ Some examples of packages that can likely be excluded are:
 "<path-to-isaac-sim>/extscache/omni.kit.*"          // Kit UI tools
 "<path-to-isaac-sim>/extscache/omni.graph.*"        // Graph UI tools
 "<path-to-isaac-sim>/extscache/omni.services.*"     // Services tools
-...
 ```
+```
+

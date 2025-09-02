@@ -145,24 +145,24 @@ class PreGraspingSceneCfg(InteractiveSceneCfg):
     )
     
     # CORRECT STRUCTURE - Change to this
-    tiled_camera_left: TiledCameraCfg = TiledCameraCfg(
-        prim_path="{ENV_REGEX_NS}/camera_left",  # Move prim_path here
-        data_types=["rgb"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=2.208,
-            focus_distance=28.0,
-            horizontal_aperture=5.76,
-            vertical_aperture=3.24,
-            clipping_range=(0.1, 1000.0)
-        ),
-        width=128,
-        height=128,
-        offset=TiledCameraCfg.OffsetCfg(
-            pos=(1.1, -0.06, 1.3),
-            rot=(0.67438, 0.21263, 0.21263,0.67438),
-            convention="opengl"
-        )
-    )
+    # tiled_camera_left: TiledCameraCfg = TiledCameraCfg(
+    #     prim_path="{ENV_REGEX_NS}/camera_left",  # Move prim_path here
+    #     data_types=["rgb"],
+    #     spawn=sim_utils.PinholeCameraCfg(
+    #         focal_length=2.208,
+    #         focus_distance=28.0,
+    #         horizontal_aperture=5.76,
+    #         vertical_aperture=3.24,
+    #         clipping_range=(0.1, 1000.0)
+    #     ),
+    #     width=128,
+    #     height=128,
+    #     offset=TiledCameraCfg.OffsetCfg(
+    #         pos=(1.1, -0.06, 1.3),
+    #         rot=(0.67438, 0.21263, 0.21263,0.67438),
+    #         convention="opengl"
+    #     )
+    # )
 
     # tiled_camera_right: TiledCameraCfg = TiledCameraCfg(
     #     prim_path="{ENV_REGEX_NS}/camera_right",  # Move prim_path here
@@ -275,55 +275,19 @@ class ObservationsCfg:
         )
         
         # # End-effector pose
-        ee_pose = ObsTerm(func=mdp.end_effector_pose)
+        # ee_pose = ObsTerm(func=mdp.end_effector_pose)
         
         # Cube positions
-        # cube_positions = ObsTerm(func=mdp.cube_positions)
+        cube_positions = ObsTerm(func=mdp.cube_positions)
         
         # Target position (for the end-effector)
-        # target_position = ObsTerm(func=mdp.generated_commands, params={"command_name": "tracking_pose"})
-        
+        target_position = ObsTerm(func=mdp.generated_commands, params={"command_name": "tracking_pose"})
+
         # Task ID (which cube to pick)
         task_id = ObsTerm(func=mdp.task_id)
 
         # Actions
         actions = ObsTerm(func=mdp.last_action)
-
-    # @configclass
-    # class SubtaskCfg(ObsGroup):
-    #     """Observations for tracking the subtask progress."""
-        
-    #     # Stage 0: Alignment above cube
-    #     alignment_complete = ObsTerm(
-    #         func=mdp.alignment_above_cube_complete,
-    #         params={
-    #             "robot_cfg": SceneEntityCfg(name="robot", joint_ids=[], fixed_tendon_ids=[], body_ids=[], object_collection_ids=[]),
-    #             "ee_frame_cfg": SceneEntityCfg(name="ee_frame", joint_ids=[], fixed_tendon_ids=[], body_ids=[], object_collection_ids=[]),
-    #             "height_threshold": 0.3,
-    #             "alignment_threshold": 0.0,
-    #         },
-    #     )
-        
-    #     # Stage 1: Grasp cube
-    #     cube_grasped = ObsTerm(
-    #         func=mdp.cube_grasped,
-    #         params={
-    #             "robot_cfg": SceneEntityCfg(name="robot", joint_ids=[], fixed_tendon_ids=[], body_ids=[], object_collection_ids=[]),
-    #             "ee_frame_cfg": SceneEntityCfg(name="ee_frame", joint_ids=[], fixed_tendon_ids=[], body_ids=[], object_collection_ids=[]),
-    #             "distance_threshold": 0.01,
-    #             "gripper_threshold": 25.0,
-    #         },
-    #     )
-        
-    #     # Stage 2: Place cube at target
-    #     cube_placed = ObsTerm(
-    #         func=mdp.cube_placed_at_target,
-    #         params={
-    #             "robot_cfg": SceneEntityCfg(name="robot", joint_ids=[], fixed_tendon_ids=[], body_ids=[], object_collection_ids=[]),
-    #             "distance_threshold": 0.05,
-    #             "gripper_threshold": 5.0,
-    #         },
-    #     )
         
         def __post_init__(self):
             self.enable_corruption = True
@@ -355,7 +319,7 @@ class ObservationsCfg:
     # observation groups
     policy: PolicyCfg = PolicyCfg()
     # subtask_terms: SubtaskCfg = SubtaskCfg()
-    rgb_camera: RGBCameraPolicyCfg = RGBCameraPolicyCfg()
+    # rgb_camera: RGBCameraPolicyCfg = RGBCameraPolicyCfg()
 
 
 @configclass
@@ -418,38 +382,49 @@ class EventCfg:
 class RewardsCfg:
     """Reward terms for the MDP."""
 
-    # Distance-based reward for positioning above the target cube
+    # Replace the current position reward with a smoother version
     position_reward = RewTerm(
         func=mdp.position_above_cube_reward,
-        weight=-2.0,
+        weight=-2.0,  # Reduce from -2.0 to -1.0
         params={"height_offset": 0.1},
     )
     
-    # Tanh-transformed position reward
+    # Increase the tanh reward weight for better gradient
     position_reward_tanh = RewTerm(
         func=mdp.position_above_cube_tanh,
-        weight=0.5,
-        params={"height_offset": 0.1,"std": 0.2},
+        weight=1.0,  # Increase from 0.5 to 1.0
+        params={"height_offset": 0.1, "std": 0.15},  # Slightly smaller std for sharper gradient
     )
     
-    # Orientation alignment reward
+    # Increase orientation reward weight
     orientation_reward = RewTerm(
         func=mdp.orientation_alignment_reward,
-        weight=1.0,
+        weight=1.5,  # Increase from 1.0 to 1.5
         params={
             "ee_frame_cfg": SceneEntityCfg("ee_frame"),
         },
     )
     
-    # Penalize excessive movements
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.0001)
-    joint_vel = RewTerm(
-        func=mdp.joint_vel_l2,
-        weight=-0.001,
-        params={"asset_cfg": SceneEntityCfg("robot")},
+    # Add success reward
+    success_bonus = RewTerm(
+        func=mdp.alignment_success_reward,
+        weight=5.0,
+        params={
+            "position_threshold": 0.07,  # Slightly more lenient than termination
+            "orientation_threshold": 0.8,
+            "height_offset": 0.1,
+            "ee_frame_cfg": SceneEntityCfg("ee_frame"),
+        },
     )
     
-    # Penalize excessive torques
+    # Reduce excessive movement penalties
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.00005)  # Reduced from -0.0001
+    joint_vel = RewTerm(
+        func=mdp.joint_vel_l2,
+        weight=-0.0005,  # Reduced from -0.001
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+   # Penalize excessive torques
     joint_torques_penalty = RewTerm(
         func=mdp.joint_torques_l2,
         weight=-0.0000005,
@@ -463,15 +438,15 @@ class TerminationsCfg:
     # Time out
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     
-    # Task success (end-effector aligned above target cube)
+    # Task success (end-effector aligned above target cube) - make slightly more lenient
     alignment_success = DoneTerm(
         func=mdp.alignment_success,
         time_out=True,
         params={
-            "position_threshold": 0.1,
-            "orientation_threshold": 0.9,
-            "velocity_threshold": 0.08,
-            "torque_threshold": 1.0,
+            "position_threshold": 0.06,  # Increased from 0.05
+            "orientation_threshold": 0.85,  # Reduced from 0.9
+            "velocity_threshold": 0.07,  # Increased from 0.05
+            "torque_threshold": 1.5,  # Increased from 1.0
             "height_offset": 0.1,
             "ee_frame_cfg": SceneEntityCfg("ee_frame"),
             "asset_cfg": SceneEntityCfg("robot"),
@@ -482,15 +457,26 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    joint_torque = CurrTerm(
-        func=mdp.modify_reward_weight, params={"term_name": "joint_torques_penalty", "weight": -0.004, "num_steps": 400}
+    
+    
+    # Gradually decrease penalty for joint velocities
+    joint_vel_weight = CurrTerm(
+        func=mdp.modify_reward_weight, 
+        params={"term_name": "joint_vel", "weight": -0.0002, "num_steps": 400}
     )
-
-    # position_weight = CurrTerm(
-    # func=mdp.modify_reward_weight, 
-    # params={"term_name": "distance_to_tracking_pose", "weight": -0.5, "num_steps": 400}
-    # )
-##
+    
+    # Gradually decrease penalty for action rate
+    action_rate_weight = CurrTerm(
+        func=mdp.modify_reward_weight, 
+        params={"term_name": "action_rate", "weight": -0.00002, "num_steps": 400}
+    )
+    
+    # Gradually increase joint torque penalty
+    joint_torque_weight = CurrTerm(
+        func=mdp.modify_reward_weight, 
+        params={"term_name": "joint_torques_penalty", "weight": -0.0000002, "num_steps": 400}
+    )
+# ##
 # Environment configuration
 ##
 
@@ -509,12 +495,12 @@ class PreGraspingEnvCfg(ManagerBasedRLEnvCfg):
     # MDP settings
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
-    # curriculum: CurriculumCfg = CurriculumCfg()
-    curriculum = None
+    curriculum: CurriculumCfg = CurriculumCfg()
+    # curriculum = None
 
     # Unused managers
-    # commands: CommandsCfg = CommandsCfg()  # Add the command configuration
-    commands = None
+    commands: CommandsCfg = CommandsCfg()  # Add the command configuration
+    # commands = None
 
 
     # Post initialization

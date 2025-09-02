@@ -1,0 +1,175 @@
+# Seed for reproducibility
+seed: 42
+
+# Models configuration for multi-observation space with SAC
+models:
+  # SAC requires separate models for actor and critics
+  separate: True
+  
+  policy:
+    class: GaussianMixin # For continuous actions (actor/policy network)
+    clip_actions: False
+    clip_log_std: True
+    min_log_std: -20.0
+    max_log_std: 2.0
+    initial_log_std: 0.0
+    
+    # Network architecture for multi-input (state + image)
+    network:
+      # CNN encoder for image input
+      - name: camera_features
+        input: permute(OBSERVATIONS["image"], (0, 3, 1, 2))    # PyTorch NHWC -> NCHW
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 8, stride: 4, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 3, stride: 1, padding: 0}
+          - flatten
+          - linear: 512
+        activations: [relu, relu, relu, null, tanh]
+
+      # MLP encoder for state input
+      - name: proprioception
+        input: OBSERVATIONS["state"]  # This will receive the 'state' key from observation dict
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+
+      # Fusion layer combining CNN and MLP outputs
+      - name: net
+        input: concatenate([camera_features, proprioception])  # Combine features
+        layers: [128, 64]
+        activations: [relu, relu]
+
+    # Output specification
+    output: ACTIONS
+    
+  critic_1:
+    class: DeterministicMixin  # For Q-value estimation (first critic)
+    clip_actions: False
+    
+    # Same network architecture as policy for feature extraction
+    network:
+      - name: camera_features
+        input: permute(OBSERVATIONS["image"], (0, 3, 1, 2))
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 8, stride: 4, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 3, stride: 1, padding: 0}
+          - flatten
+          - linear: 512
+        activations: [relu, relu, relu, null, tanh]
+        
+      # MLP encoder for state input  
+      - name: proprioception
+        input: OBSERVATIONS["state"]
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+
+      # Action input for critic (concatenated with state features)
+      - name: action_input
+        input: ACTIONS
+        layers: []  # No processing, just pass through
+        activations: []
+
+      # Fusion layer combining state features and actions
+      - name: net
+        input: concatenate([camera_features, proprioception, action_input])
+        layers: [128, 64]
+        activations: [relu, relu]
+
+    # Single Q-value output
+    output: ONE
+
+  critic_2:
+    class: DeterministicMixin  # For Q-value estimation (second critic)
+    clip_actions: False
+    
+    # Same network architecture as critic_1 (twin critic for SAC)
+    network:
+      - name: camera_features
+        input: permute(OBSERVATIONS["image"], (0, 3, 1, 2))
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 8, stride: 4, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 3, stride: 1, padding: 0}
+          - flatten
+          - linear: 512
+        activations: [relu, relu, relu, null, tanh]
+        
+      # MLP encoder for state input  
+      - name: proprioception
+        input: OBSERVATIONS["state"]
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+
+      # Action input for critic
+      - name: action_input
+        input: ACTIONS
+        layers: []
+        activations: []
+
+      # Fusion layer
+      - name: net
+        input: concatenate([camera_features, proprioception, action_input])
+        layers: [128, 64]
+        activations: [relu, relu]
+
+    # Single Q-value output
+    output: ONE
+
+# Memory configuration - SAC uses replay buffer instead of rollout memory
+memory:
+  class: RandomMemory
+  memory_size: 1000  # REDUCED: Much smaller buffer to fit in GPU memory with images
+  # NOTE: For 256 envs, this gives ~195 steps per env in buffer (50K/256)
+  # This is still sufficient for SAC's sample efficiency
+
+# SAC agent configuration
+agent:
+  class: SAC
+  gradient_steps: 1  # Number of gradient steps per environment step
+  batch_size: 16    # REDUCED: Smaller batch size for GPU memory efficiency
+  
+  # Core SAC parameters
+  discount_factor: 0.99
+  polyak: 0.005  # Soft update coefficient for target networks (tau)
+  
+  # Learning rates (can be different for actor and critic)
+  actor_learning_rate: 3.0e-04
+  critic_learning_rate: 3.0e-04
+  learning_rate_scheduler: null
+  learning_rate_scheduler_kwargs: {}
+
+  # State preprocessing (for the 'state' part of observations)
+  state_preprocessor: RunningStandardScaler
+  state_preprocessor_kwargs: null
+  
+  # SAC-specific parameters
+  random_timesteps: 2000   # REDUCED: Less random exploration (was 10000)
+  learning_starts: 2000    # REDUCED: Start training sooner (was 10000)
+  grad_norm_clip: 1.0
+  
+  # Entropy parameters (SAC automatically adjusts entropy coefficient)
+  initial_entropy_value: 0.2  # Initial entropy coefficient
+  target_entropy: auto        # Automatic target entropy (typically -dim(action_space))
+  
+  # Experiment tracking
+  experiment:
+    directory: "./logs/skrl_camera_pose_tracking_sac"
+    experiment_name: "sac_multiobs"
+    write_interval: 100
+    checkpoint_interval: 1000
+    wandb: True  # Set to True if using Weights & Biases
+
+# MEMORY OPTIMIZATION NOTES:
+# If you still get OOM errors, try these additional reductions:
+# 1. Reduce memory_size further (e.g., 25000 or 10000)
+# 2. Reduce batch_size further (e.g., 32)
+# 3. Reduce number of environments (e.g., 128 or 64 instead of 256)
+# 4. Consider image compression/downsampling in your environment
+# 5. Use gradient checkpointing in network definitions
+
+# Sequential trainer configuration
+trainer:
+  class: SequentialTrainer
+  timesteps: 100000  # Total training timesteps (SAC is often more sample efficient than PPO)
+  environment_info: log

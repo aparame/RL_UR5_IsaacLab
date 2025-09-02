@@ -33,7 +33,7 @@ marker_cfg.prim_path = "/Visuals/FrameTransformer"
 ##
 
 @configclass
-class PoseTrackingSceneCfg(InteractiveSceneCfg):
+class CameraPoseTrackingSceneCfg(InteractiveSceneCfg):
     """Configuration for a UR5 pick and place scene."""
 
     # Ground plane
@@ -72,6 +72,7 @@ class PoseTrackingSceneCfg(InteractiveSceneCfg):
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.7, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 0.0)),
     )
 
+
     
     # # CORRECT STRUCTURE - Change to this
     # tiled_camera_left: TiledCameraCfg = TiledCameraCfg(
@@ -89,28 +90,28 @@ class PoseTrackingSceneCfg(InteractiveSceneCfg):
     #     offset=TiledCameraCfg.OffsetCfg(
     #         pos=(1.27, -0.06, 1.143),
     #         rot=(0.62933, 0.32239, 0.32239, 0.62933),
-    #         convention="world"
+    #         convention="opengl"
     #     )
     # )
 
-    # tiled_camera_right: TiledCameraCfg = TiledCameraCfg(
-    #     prim_path="{ENV_REGEX_NS}/camera_right",  # Move prim_path here
-    #     data_types=["rgb"],
-    #     spawn=sim_utils.PinholeCameraCfg(
-    #         focal_length=2.12,
-    #         focus_distance=28.0,
-    #         horizontal_aperture=5.76,
-    #         vertical_aperture=3.24,
-    #         clipping_range=(0.1, 1000.0)
-    #     ),
-    #     width=224,
-    #     height=224,
-    #     offset=TiledCameraCfg.OffsetCfg(
-    #         pos=(1.27, 0.06, 1.143),
-    #         rot=(0.62933, 0.32239, 0.32239, 0.62933),
-    #         convention="world"
-    #     )
-    # )
+    tiled_camera_right: TiledCameraCfg = TiledCameraCfg(
+        prim_path="{ENV_REGEX_NS}/camera_right",  # Move prim_path here
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=2.12,
+            focus_distance=28.0,
+            horizontal_aperture=5.76,
+            vertical_aperture=3.24,
+            clipping_range=(0.1, 1000.0)
+        ),
+        width=224,
+        height=224,
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(1.27, 0.06, 1.143),
+            rot=( 0.62933,0.32239, 0.32239,0.62933),
+            convention="opengl"
+        )
+    )
 
     # Lights
     dome_light = AssetBaseCfg(
@@ -133,7 +134,7 @@ class CommandsCfg:
         resampling_time_range=(4.0, 4.0),
         debug_vis=True,
         ranges=mdp.UniformPoseCommandCfg.Ranges(
-            pos_x=(0.3, 0.7), pos_y=(-0.6, 0.6), pos_z=(-0.1, 0.2), roll=(0.0, 0.0), pitch=(1.57, 1.57), yaw=(0.0, 0.0)
+            pos_x=(0.3, 0.7), pos_y=(0.4, 0.5), pos_z=(-0.1, 0.2), roll=(0.0, 0.0), pitch=(1.57, 1.57), yaw=(0.0, 0.0)
         ),
     )
 
@@ -196,15 +197,15 @@ class ObservationsCfg:
         )
         
         # End-effector pose
-        # ee_pose = ObsTerm(func=mdp.end_effector_pose)
+        ee_pose = ObsTerm(func=mdp.end_effector_pose)
     
         
         # Target position (for the end-effector)
         target_position = ObsTerm(func=mdp.generated_commands, params={"command_name": "tracking_pose"})
-        print('target_position', target_position)
+        
 
         # Actions
-        # actions = ObsTerm(func=mdp.last_action)
+        actions = ObsTerm(func=mdp.last_action)
 
         
         def __post_init__(self):
@@ -219,17 +220,17 @@ class ObservationsCfg:
         #     params={"sensor_cfg": SceneEntityCfg("tiled_camera_left"), "data_type": "rgb"},
         # )
 
-        # camera_images_right = ObsTerm(
-        #     func=mdp.image,
-        #     params={"sensor_cfg": SceneEntityCfg("tiled_camera_right"), "data_type": "rgb"},
-        # )
+        camera_images_right = ObsTerm(
+            func=mdp.image,
+            params={"sensor_cfg": SceneEntityCfg("tiled_camera_right"), "data_type": "rgb"},
+        )
 
 
 
     # observation groups
     policy: PolicyCfg = PolicyCfg()
 
-    # rgb_camera: RGBCameraPolicyCfg = RGBCameraPolicyCfg()
+    rgb_camera: RGBCameraPolicyCfg = RGBCameraPolicyCfg()
 
 
 @configclass
@@ -245,6 +246,7 @@ class EventCfg:
             'noise_range': 0.01,  # Start with modest noise, increase as training progresses
         },
     )
+
 
 
 @configclass
@@ -273,19 +275,19 @@ class RewardsCfg:
         },
     )
 
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.00001)
+    # action_rate = RewTerm(func=mdp.action_rate_l2, weight=0.0)
     # joint_vel = RewTerm(
     #     func=mdp.joint_vel_l2,
-    #     weight=0.00001,
+    #     weight=0.0,
     #     params={"asset_cfg": SceneEntityCfg("robot")},
     # )
 
     
-    # In the RewardsCfg class in rl_ur5_env_cfg.py
+    # # In the RewardsCfg class in rl_ur5_env_cfg.py
     # joint_torques_penalty = RewTerm(
     #     func=mdp.joint_torques_l2,
     #     params={"asset_cfg": SceneEntityCfg("robot")},
-    #     weight=0.000001,  # Adjust weight as needed
+    #     weight=0.0,  # Adjust weight as needed
     # )
 
     # # In RewardsCfg class
@@ -346,18 +348,17 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    joint_torque = CurrTerm(
-        func=mdp.modify_reward_weight, params={"term_name": "joint_torques_penalty", "weight": -0.0001, "num_steps": 1000}
-    )
+    # joint_torque = CurrTerm(
+    #     func=mdp.modify_reward_weight, params={"term_name": "joint_torques_penalty", "weight": -0.0001, "num_steps": 1000}
+    # )
 
-    action_rate = CurrTerm(
-        func=mdp.modify_reward_weight, params={"term_name": "action_rate", "weight": -0.001, "num_steps": 1000}
-    )
+    # action_rate = CurrTerm(
+    #     func=mdp.modify_reward_weight, params={"term_name": "action_rate", "weight": -0.001, "num_steps": 1000}
+    # )
 
-    joint_vel = CurrTerm(
-        func=mdp.modify_reward_weight, params={"term_name": "joint_vel", "weight": -0.001, "num_steps": 1000}
-
-    )
+    # joint_vel = CurrTerm(
+    #     func=mdp.modify_reward_weight, params={"term_name": "joint_vel", "weight": -0.001, "num_steps": 1000}
+    # )
 
 
 ##
@@ -365,11 +366,11 @@ class CurriculumCfg:
 ##
 
 @configclass
-class PoseTrackingEnvCfg(ManagerBasedRLEnvCfg):
+class CameraPoseTrackingEnvCfg(ManagerBasedRLEnvCfg):
     """Environment configuration for UR5 pick and place task."""
     
     # Scene settings
-    scene: PoseTrackingSceneCfg = PoseTrackingSceneCfg(num_envs=8, env_spacing=4.0)
+    scene: CameraPoseTrackingSceneCfg = CameraPoseTrackingSceneCfg(num_envs=8, env_spacing=4.0)
     
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
@@ -379,8 +380,8 @@ class PoseTrackingEnvCfg(ManagerBasedRLEnvCfg):
     # MDP settings
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
-    # curriculum: CurriculumCfg = CurriculumCfg()
-    curriculum = None
+    curriculum: CurriculumCfg = CurriculumCfg()
+    # curriculum = None
 
     # Unused managers
     commands: CommandsCfg = CommandsCfg()  # Add the command configuration
@@ -392,7 +393,6 @@ class PoseTrackingEnvCfg(ManagerBasedRLEnvCfg):
         # General settings
         self.decimation = 4
         self.episode_length_s = 4.0  # Longer episodes for pick and place
-
 
         # make a smaller scene for play
         self.scene.num_envs = 8

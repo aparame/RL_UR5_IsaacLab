@@ -1,0 +1,142 @@
+[crash] Crash detected in pid 120901 thread 120901
+[crash] Crash metadata:
+[crash]  BuildGitlabJobID = '128178599'
+[crash]  CarbSdkVersion = '180.6+release.7436.c5558fdf.gl'
+[crash]  CrashTime = 'Tue Jun 17 13:27:08 2025 GMT'
+[crash]  DriverShaderCacheWrapper = 'disabled'
+[crash]  DumpId = '2b85c254-d731-48ff-228c1c9e-9b95276e'
+[crash]  LastUploadStatus = '200'
+[crash]  ProductName = 'OmniverseKit'
+[crash]  PythonTracebackStatus = ''py-spy' successfully wrote info to '/home/adi2440/.local/share/ov/data/Kit/Isaac-Sim Full/4.5/2b85c254-d731-48ff-228c1c9e-9b95276e.py.txt''
+[crash]  RetryCount = '0'
+[crash]  StartupTime = '1750166633'
+[crash]  UploadSuccessful = '0'
+[crash]  UptimeSeconds = '195'
+[crash]  UserStory = ''
+[crash]  UserStoryStatus = ''crashreport.gui' exited with code 2'
+[crash]  Version = '106.5.0+release.162521.d02c707b.gl'
+[crash]  aftermath_enabled = '1'
+[crash]  aftermath_flags = '3'
+[crash]  aftermath_status = 'auto-enabled'
+[crash]  aftermath_version = '2024.1'
+[crash]  appName = 'Isaac-Sim Full'
+[crash]  appState = 'started'
+[crash]  appVersion = '4.5.0'
+[crash]  autoloadExts = ''
+[crash]  buildBranch = 'release'
+[crash]  buildCi = 'gl'
+[crash]  buildConfig = 'release'
+[crash]  buildGitlabJobName = 'kit-build-release-linux-x86_64'
+[crash]  buildGitlabJobStage = 'kit-build'
+[crash]  buildGitlabPipelineID = '21399756'
+[crash]  buildHash = 'd02c707b'
+[crash]  buildMajor = '106'
+[crash]  buildMinor = '5'
+[crash]  buildNumber = '162521'
+[crash]  buildPatch = '0'
+[crash]  buildVersion = '106.5.0'
+[crash]  carboniteFrameworkVersion = '180.6+release.7436.c5558fdf.gl'
+[crash]  carboniteSdkVersion = '180.6+release.7436.c5558fdf.gl'
+[crash]  commandLine = '/home/<username>/IsaacLab/_isaac_sim/kit/kit /home/<username>/IsaacLab/_isaac_sim/apps/isaacsim.exp.full.kit --ext-folder /home/<username>/IsaacLab/_isaac_sim/apps'
+[crash]  cpuCoreLimited = '24'
+[crash]  cpuId = 'Intel64 Family 6 Model 151 Stepping 2'
+[crash]  cpuLogicalCoresBareMetal = '32'
+[crash]  cpuName = '12th Gen Intel(R) Core(TM) i9-12900KF'
+[crash]  cpuPhysicalCoresBareMetal = '16'
+[crash]  cpuUsageQuota = '-1.000000'
+[crash]  cpuVendor = 'GenuineIntel'
+[crash]  desktopOrigin = '(0, 0)'
+[crash]  desktopSize = '4480x1440'
+[crash]  displayCount = '2'
+[crash]  displayRes_0 = '2560x1440x32bit@60Hz'
+[crash]  displayRes_1 = '1920x1080x32bit@60Hz'
+[crash]  email = ''
+[crash]  environmentName = 'Individual'
+[crash]  externalBuild = '1'
+[crash]  extraExts = 'isaacsim.ros2.bridge-4.1.15'
+[crash]  gpuDriver_0 = '560.35'
+[crash]  gpuVRAM_0 = '12884901888'
+[crash]  gpu_0 = 'NVIDIA GeForce RTX 3080 Ti'
+[crash]  kitRendererDriverVersion = '560.35'
+[crash]  lastCommand = 'ToolbarPlayButtonClicked'
+[crash]  lastCommands = 'SetLightingMenuModeCommand(lighting_mode=,usd_context_name=),ToolbarPlayButtonClicked'
+[crash]  lib_isaacSim_buildBranch = 'HEAD'
+[crash]  lib_isaacSim_buildDate = 'Tue Jan 28 03:59:39 2025 +0000'
+[crash]  lib_isaacSim_buildHash = 'f59b300'
+[crash]  lib_isaacSim_buildRepo = 'https://gitlab-ci-token:glcbt-64_izvVpw2UstTgBX91kH-r@gitlab-master.nvidia.com/omniverse/isaac/omni_isaac_sim.git'
+[crash]  lib_isaacSim_buildVersion = '4.5.0-rc.36'
+[crash]  lib_physx_buildBranch = 'HEAD'
+[crash]  lib_physx_buildDate = 'MISSING PHYSICS_BUILD_DATE'
+[crash]  lib_physx_buildHash = 'c80d589'
+[crash]  lib_physx_buildRepo = 'gitlab-master.nvidia.com/omniverse/physics'
+[crash]  lib_physx_buildVersion = '106.5.7'
+[crash]  memoryStats = '(avail/total) RAM: 45.6052/62.5826GB, Swap: 0.953121/0.953121GB, VM: 1.71799e+10/1.71799e+10GB'
+[crash]  nvidia-smi = '
+==============NVSMI LOG==============
+
+Timestamp                                 : Tue Jun 17 09:23:53 2025
+Driver Version                            : 560.35.03
+CUDA Version                              : 12.6
+
+Attached GPUs      [crash]  osDistro = 'ubuntu'
+[crash]  osName = '22.04.5 LTS (Jammy Jellyfish)'
+[crash]  osVersion = '22.04.5'
+[crash]  portableMode = '0'
+[crash]  primaryDisplayRes = '2560x1440x32bit@60Hz'
+[crash]  runEnvironment = 'Individual'
+[crash]  runningInContainer = '0'
+[crash]  shaderdb_debugSymbols = '0'
+[crash]  shaderdb_dumpIncludeOverrides = '0'
+[crash]  shaderdb_dumpIntermediates = '0'
+[crash]  shaderdb_obfuscateCode = '1'
+[crash]  shaderdb_optimizationLevel = '1'
+[crash]  systemInfo = '
+|---------------------------------------------------------------------------------------------|
+| Driver Version: 560.35.03     | Graphics API: Vulkan
+|===============================================================================[crash]  telemetrySessionId = '13018428391094852097'
+[crash]  terminatedByAbort = '0'
+[crash]  totalRamBareMetalMB = '64084'
+[crash]  totalRamLimitedMB = '64084'
+[crash]  totalSwapBareMetalMB = '975'
+[crash]  totalSwapLimitedMB = '975'
+[crash]  userId = 'default'
+[crash]  workingDirectory = '/home/<username>/Desktop/ur5_isaacsim/src/scripts/RL_UR5'
+[crash]
+[crash] Crash files:
+[crash]  upload_file_minidump = '/home/adi2440/.local/share/ov/data/Kit/Isaac-Sim Full/4.5/2b85c254-d731-48ff-228c1c9e-9b95276e.dmp.zip'
+[crash]
+[crash] Thread 120901 backtrace follows:
+000: libc.so.6!__sigaction+0x50 (libc_sigaction.c:?)
+001: libc.so.6!__nss_database_lookup+0x2561d (./string/../sysdeps/x86_64/multiarch/strlen-avx2.S:74)
+002: libc.so.6!psiginfo+0x1218e (./stdio-common/vfprintf-internal.c:1927 (discriminator 43))
+003: libc.so.6!psiginfo+0x12ef6 (./stdio-common/vfprintf-internal.c:1602)
+004: libc.so.6!vscanf+0x14a (./libio/vsnprintf.c:116)
+005: libc.so.6!snprintf+0x96 (./stdio-common/snprintf.c:35)
+006: libisaacsim.ros2.bridge.plugin.so!char* std::string::_S_construct<char*>(char*, char*, std::allocator<char> const&, std::forward_iterator_tag)+0x1803b (??:?)
+007: libisaacsim.ros2.bridge.plugin.so!std::_Rb_tree<std::string, std::pair<std::string const, bool>, std::_Select1st<std::pair<std::string const, bool> >, std::less<std::string>, std::allocator<std::pair<std::string const, bool> > >::_M_get_insert_uniqu008: libisaacsim.ros2.bridge.plugin.so!std::_Rb_tree<std::string, std::pair<std::string const, bool>, std::_Select1st<std::pair<std::string const, bool> >, std::less<std::string>, std::allocator<std::pair<std::string const, bool> > >::_M_get_insert_uniqu009: libomni.graph.action_core.plugin.so!std::char_traits<char>::length(char const*)+0x1cff (??:?)
+010: libomni.graph.action_core.plugin.so!std::_Function_base::_Base_manager<omni::graph::exec::unstable::SerialScheduler::schedule<omni::graph::exec::unstable::Executor<omni::graph::exec::unstable::INode, omni::graph::exec::unstable::ExecutionVisit, omni011: libomni.graph.exec.plugin.so!_init+0x250f (??:0)
+012: libomni.graph.action_core.plugin.so!std::string::append(char const*, unsigned long)+0x985 (??:?)
+013: libomni.graph.core.plugin.so!void std::vector<unsigned long, std::allocator<unsigned long> >::_M_realloc_insert<omni::graph::exec::unstable::CompactUniqueIndex::{unnamed type#1}>(__gnu_cxx::__normal_iterator<unsigned long*, std::vector<unsigned long014: libomni.graph.core.plugin.so!void std::vector<unsigned long, std::allocator<unsigned long> >::_M_realloc_insert<omni::graph::exec::unstable::CompactUniqueIndex::{unnamed type#1}>(__gnu_cxx::__normal_iterator<unsigned long*, std::vector<unsigned long015: libomni.graph.core.plugin.so!std::basic_string<char, std::char_traits<char>, std::allocator<char> > std::operator+<char, std::char_traits<char>, std::allocator<char> >(std::basic_string<char, std::char_traits<char>, std::allocator<char> >&&, char co016: libomni.graph.exec.plugin.so!_init+0x2f3c (??:0)
+017: libomni.graph.core.plugin.so!std::_Function_base::_Base_manager<omni::graph::exec::unstable::SerialScheduler::schedule<omni::graph::exec::unstable::IScheduleFunction*&>(omni::graph::exec::unstable::IScheduleFunction*&, omni::graph::exec::unstable::S018: libomni.graph.core.plugin.so!std::_Hashtable<std::string, std::pair<std::string const, std::string>, std::allocator<std::pair<std::string const, std::string> >, std::__detail::_Select1st, std::equal_to<std::string>, std::hash<std::string>, std::__de019: libomni.graph.core.plugin.so!std::basic_string<char, std::char_traits<char>, std::allocator<char> > std::operator+<char, std::char_traits<char>, std::allocator<char> >(std::basic_string<char, std::char_traits<char>, std::allocator<char> >&&, char co020: libomni.graph.exec.plugin.so!_init+0x2f3c (??:0)
+021: libomni.stageupdate.plugin.so!std::_Function_base::_Base_manager<omni::graph::exec::unstable::SerialScheduler::schedule<omni::graph::exec::unstable::Executor<omni::graph::exec::unstable::INode, omni::graph::exec::unstable::ExecutionVisit, omni::grap022: libomni.stageupdate.plugin.so!std::basic_string<char, std::char_traits<char>, std::allocator<char> >::basic_string(char const*, std::allocator<char> const&)+0x384 (??:?)
+023: libomni.graph.exec.plugin.so!_init+0x2f3c (??:0)
+024: libomni.kit.exec.core.plugin.so!std::basic_string<char, std::char_traits<char>, std::allocator<char> >::~basic_string()+0x2798 (??:?)
+025: libomni.kit.exec.core.plugin.so!std::_Function_base::_Base_manager<omni::kit::exec::core::unstable::PassPipeline::_runPopulateTraversal(omni::graph::exec::unstable::IGraphBuilderContext*, omni::graph::exec::unstable::INodeGraphDef*)::{lambda(auto:1,026: libomni.graph.exec.plugin.so!_init+0x126d (??:0)
+027: libomni.kit.exec.core.plugin.so!std::__detail::_Map_base<std::thread::id, std::pair<std::thread::id const, unsigned long>, std::allocator<std::pair<std::thread::id const, unsigned long> >, std::__detail::_Select1st, std::equal_to<std::thread::id>, s028: libomni.kit.exec.core.plugin.so!std::__detail::_Map_base<std::thread::id, std::pair<std::thread::id const, unsigned long>, std::allocator<std::pair<std::thread::id const, unsigned long> >, std::__detail::_Select1st, std::equal_to<std::thread::id>, s029: libomni.kit.exec.core.plugin.so!_init+0x3a3e (??:0)
+030: libomni.usd.so!omni::usd::Picking* std::__uninitialized_copy<false>::__uninit_copy<__gnu_cxx::__normal_iterator<omni::usd::Picking const*, std::vector<omni::usd::Picking, std::allocator<omni::usd::Picking> > >, omni::usd::Picking*>(__gnu_cxx::__norm031: libomni.usd.so!omni::usd::Picking* std::__uninitialized_copy<false>::__uninit_copy<__gnu_cxx::__normal_iterator<omni::usd::Picking const*, std::vector<omni::usd::Picking, std::allocator<omni::usd::Picking> > >, omni::usd::Picking*>(__gnu_cxx::__norm032: libomni.usd.so!std::string::compare(char const*) const+0x2c6f (??:?)
+033: libcarb.events.plugin.so!std::string __gnu_cxx::__to_xstring<std::string, char>(int (*)(char*, unsigned long, char const*, __va_list_tag*), unsigned long, char const*, ...)+0x6d9a (??:?)
+034: libcarb.events.plugin.so!std::string __gnu_cxx::__to_xstring<std::string, char>(int (*)(char*, unsigned long, char const*, __va_list_tag*), unsigned long, char const*, ...)+0x7145 (??:?)
+035: libomni.timeline.plugin.so!std::string __gnu_cxx::__to_xstring<std::string, char>(int (*)(char*, unsigned long, char const*, __va_list_tag*), unsigned long, char const*, ...)+0x2cc9 (??:?)
+036: libomni.timeline.plugin.so!std::string __gnu_cxx::__to_xstring<std::string, char>(int (*)(char*, unsigned long, char const*, __va_list_tag*), unsigned long, char const*, ...)+0x3918 (??:?)
+037: libomni.timeline.plugin.so!carbOnPluginPreStartup+0xadf (??:?)
+038: libcarb.events.plugin.so!std::string __gnu_cxx::__to_xstring<std::string, char>(int (*)(char*, unsigned long, char const*, __va_list_tag*), unsigned long, char const*, ...)+0x6d9a (??:?)
+039: libcarb.events.plugin.so!std::string __gnu_cxx::__to_xstring<std::string, char>(int (*)(char*, unsigned long, char const*, __va_list_tag*), unsigned long, char const*, ...)+0x7145 (??:?)
+040: libcarb.events.plugin.so!std::string __gnu_cxx::__to_xstring<std::string, char>(int (*)(char*, unsigned long, char const*, __va_list_tag*), unsigned long, char const*, ...)+0x7281 (??:?)
+041: libomni.kit.loop-isaac.plugin.so!std::char_traits<char>::length(char const*)+0x1f3c (??:?)
+042: libomni.kit.loop-isaac.plugin.so!std::string::replace(unsigned long, unsigned long, char const*, unsigned long)+0x1125f (??:?)
+043: libomni.kit.app.plugin.so!_init+0x7882 (??:0)
+044: libomni.kit.app.plugin.so!carbOnPluginPreStartup+0x211d (??:?)
+045: kit!_init+0x910 (??:0)
+046: libc.so.6!__libc_init_first+0x90 (./csu/../sysdeps/nptl/libc_start_call_main.h:58)
+047: libc.so.6!__libc_start_main+0x80 (./csu/../csu/libc-start.c:128)
+048: kit!_start+0x29 (??:?)

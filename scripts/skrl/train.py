@@ -88,6 +88,9 @@ from isaaclab.utils.io import dump_pickle, dump_yaml
 
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 
+import isaaclab_tasks  # noqa: F401
+from isaaclab_tasks.utils.hydra import hydra_task_config
+
 # Import our tasks package to register environments
 import RL_UR5  # noqa: F401
 

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import torch
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, Any, List
 import isaaclab.utils.math as math_utils
 import random
-
+from .thresholds import *  # Import all constants from thresholds
 
 
 from isaaclab.assets import Articulation
@@ -229,61 +229,61 @@ def camera_images(env: ManagerBasedRLEnv, camera_cfg: SceneEntityCfg = SceneEnti
 Reset functions
 """
 
+@torch.no_grad()
 def reset_robot_pose_with_noise(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
-    base_pose: list[float] = None,
-    noise_range: float = 0.1,
+    base_pose: list[float] | torch.Tensor | None = None,
+    noise_range: float = 0.10,
+    train_gripper: bool = False,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ):
-    """Reset the robot to a specific joint pose with added random noise.
-    
-    Args:
-        env: The environment instance
-        env_ids: Tensor of environment IDs to reset
-        base_pose: Base joint positions to set for the robot (default home pose if None)
-        noise_range: Range of uniform random noise to add to each joint position
-        asset_cfg: Configuration for the robot
     """
-    # Get the robot from the scene
+    Vectorised reset: sets the *same* home pose for all `env_ids` and adds
+    uniform ±`noise_range` rad noise **on-device**.
+
+    • Uses only `torch.rand` → deterministic with `torch.manual_seed`.  
+    • `train_gripper=False` → 6-DoF arm only.  If `True`, the gripper joint
+      is appended and driven like the others.
+    """
     robot = env.scene[asset_cfg.name]
-    
-    # Use default pose if none provided
-    if base_pose is None:
-        base_pose = [-0.2321, -2.0647, 1.9495, 0.8378, 1.5097, 0.0, 0.0]  # Default home pose
-    
-    # Convert pose to tensor
-    joint_pos_base = torch.tensor(base_pose, device=env.device)
-    
-    # Create random noise for each environment
-    num_joints = len(base_pose)
-    noise = torch.rand((len(env_ids), num_joints), device=env.device) * 2 * noise_range - noise_range
-    
-    # Apply noise to the base pose
-    joint_pos = joint_pos_base.unsqueeze(0) + noise
-    joint_vel = torch.zeros_like(joint_pos)
-    
-    # Get the actuatable joint indices
-    actuatable_joint_names = [
-        "shoulder_pan_joint",
-        "shoulder_lift_joint",
-        "elbow_joint",
-        "wrist_1_joint",
-        "wrist_2_joint",
-        "wrist_3_joint",
-        "robotiq_85_left_knuckle_joint"
+
+    # ------------- resolve joint list -------------
+    joint_names = [
+        "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+        "wrist_1_joint",     "wrist_2_joint",        "wrist_3_joint",
     ]
-    
-    # Get the indices of these joints in the robot model
-    joint_indices = []
-    for name in actuatable_joint_names:
-        if name in robot.joint_names:
-            joint_indices.append(robot.joint_names.index(name))
-    
-    # Set into the physics simulation - only for the actuatable joints
-    robot.set_joint_position_target(joint_pos, joint_ids=joint_indices, env_ids=env_ids)
-    robot.set_joint_velocity_target(joint_vel, joint_ids=joint_indices, env_ids=env_ids)
-    robot.write_joint_state_to_sim(joint_pos, joint_vel, joint_ids=joint_indices, env_ids=env_ids)
+    if train_gripper:
+        joint_names.append("robotiq_85_left_knuckle_joint")
+
+    joint_ids = torch.as_tensor(
+        [robot.joint_names.index(n) for n in joint_names],
+        device=env.device,
+        dtype=torch.long,
+    )
+
+    # ------------- base pose & noise --------------
+    if base_pose is None:
+        # same order as joint_names
+        base_pose = [-0.2321, -2.0647, 1.9495, 0.8378, 1.5097, 0.0]
+        if train_gripper:
+            base_pose.append(0.0)
+
+    base_pose = torch.tensor(base_pose, device=env.device)          #  (J,)
+    noise     = (torch.rand((len(env_ids), len(base_pose)),
+                            device=env.device) * 2 - 1) * noise_range
+
+    q_pos = base_pose.unsqueeze(0) + noise                          #  (B,J)
+    q_vel = torch.zeros_like(q_pos)
+
+    # ----- 1) teleport the robot ----------------------------------------
+    robot.write_joint_state_to_sim(
+        q_pos, q_vel, joint_ids=joint_ids, env_ids=env_ids
+    )
+
+    # ----- 2) align controller targets ----------------------------------
+    robot.set_joint_position_target(q_pos, joint_ids, env_ids)
+    robot.set_joint_velocity_target(q_vel, joint_ids, env_ids)
     
     return {}
 
@@ -313,79 +313,198 @@ def sample_object_poses(
 
     return pose_list
 
-
-def reset_cube_positions(
+def reset_dynamic_obstacle(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
-    cube_cfgs: list[SceneEntityCfg] = None,
-    min_distance: float = 0.1,
+    obstacle_cfg: SceneEntityCfg = SceneEntityCfg("red_cube"),
+    reset_bounds: dict = {"x_min": 0.4, "x_max": 0.6, "y_min": 0.0, "y_max": 0.3, "z": 0.85},
 ):
-    """Randomize cube positions on the table within the pick position bounds.
+    """Reset the dynamic obstacle to a random position at the start of each episode.
     
     Args:
         env: The environment instance
         env_ids: Tensor of environment IDs to reset
-        table_cfg: Configuration for the table
-        cube_cfgs: List of configurations for the cubes
-        min_distance: Minimum distance between cubes in meters
+        obstacle_cfg: Configuration for the obstacle object
+        reset_bounds: Bounds for initial reset position
     """
-    # Set default cube configurations if not provided
-    if cube_cfgs is None:
-        cube_cfgs = [
-            SceneEntityCfg("red_cube"),
-            SceneEntityCfg("green_cube"),
-            SceneEntityCfg("blue_cube")
-        ]
+    # Get the obstacle object
+    obstacle = env.scene[obstacle_cfg.name]
     
-    # Define pick bounds for cube placement
-    pick_min_bounds = torch.tensor([0.3, -0.4, 0.77], device=env.device)
-    pick_max_bounds = torch.tensor([0.6, 0.0, 0.77], device=env.device)
-    
-    # Calculate pose range dictionary for the sample_object_poses function
+    # Define pose range for sampling
     pose_range = {
-        "x": (pick_min_bounds[0].item(), pick_max_bounds[0].item()),
-        "y": (pick_min_bounds[1].item(), pick_max_bounds[1].item()),
-        "z": (pick_min_bounds[2].item(), pick_max_bounds[2].item()),
-        "roll": (0.0, 0.0),  # No rotation for now
+        "x": (reset_bounds["x_min"], reset_bounds["x_max"]),
+        "y": (reset_bounds["y_min"], reset_bounds["y_max"]),
+        "z": (reset_bounds["z"], reset_bounds["z"]),
+        "roll": (0.0, 0.0),
         "pitch": (0.0, 0.0),
         "yaw": (0.0, 0.0),
     }
     
-    # Randomize poses for each environment
+    # Reset position for each environment
     for cur_env in env_ids.tolist():
-        # Sample poses with minimum separation
+        # Sample a random pose
         pose_list = sample_object_poses(
-            num_objects=len(cube_cfgs),
-            min_separation=min_distance,
+            num_objects=1,
+            min_separation=0.0,
             pose_range=pose_range,
-            max_sample_tries=100
+            max_sample_tries=10
         )
         
-        # Apply poses to each cube
-        for i, cube_cfg in enumerate(cube_cfgs):
-            cube = env.scene[cube_cfg.name]
+        # Convert pose to tensor
+        pose_tensor = torch.tensor([pose_list[0]], device=env.device)
+        positions = pose_tensor[:, 0:3] + env.scene.env_origins[cur_env, 0:3]
+        orientations = math_utils.quat_from_euler_xyz(
+            pose_tensor[:, 3], pose_tensor[:, 4], pose_tensor[:, 5]
+        )
+        
+        # Write pose to simulation
+        obstacle.write_root_pose_to_sim(
+            torch.cat([positions, orientations], dim=-1),
+            env_ids=torch.tensor([cur_env], device=env.device)
+        )
+        
+        # Reset velocities
+        obstacle.write_root_velocity_to_sim(
+            torch.zeros(1, 6, device=env.device),
+            env_ids=torch.tensor([cur_env], device=env.device)
+        )
+    
+    return {}  
+    
+
+def move_dynamic_obstacle(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    obstacle_cfg: SceneEntityCfg = SceneEntityCfg("red_cube"),
+    movement_type: str = "circular",
+    center_pos: list = [0.5, 0.25, 0.85],
+    radius: float = 0.15,
+    speed: float = 0.5,
+    height_variation: float = 0.1,
+    # New diagonal movement parameters
+    diagonal_bounds: dict = {"x_min": -0.6, "x_max": -0.3, "y_min": -0.35, "y_max": 0.35},
+    # Reset parameters
+    reset_bounds: dict = {"x_min": 0.4, "x_max": 0.6, "y_min": 0.0, "y_max": 0.3, "z": 0.85},
+):
+    """Move the dynamic obstacle in a specified pattern, with embedded reset functionality.
+    
+    Args:
+        env: The environment instance
+        env_ids: Tensor of environment IDs to update
+        obstacle_cfg: Configuration for the obstacle object
+        movement_type: Type of movement ("circular", "linear", "diagonal", "random_smooth")
+        center_pos: Center position for movement pattern
+        radius: Radius for circular movements
+        speed: Speed of movement
+        height_variation: Vertical oscillation amplitude
+        diagonal_bounds: Bounds for diagonal movement {"x_min", "x_max", "y_min", "y_max"}
+        reset_bounds: Bounds for initial reset position {"x_min", "x_max", "y_min", "y_max", "z"}
+    """
+    # Get the obstacle object
+    obstacle = env.scene[obstacle_cfg.name]
+    
+    # Check if this is being called during reset (episode_length_buf would be 0)
+    is_reset = (env.episode_length_buf == 0).any()
+    
+    for i, env_id in enumerate(env_ids.tolist()):
+        
+        # Handle reset positioning
+        if is_reset or env.episode_length_buf[env_id] == 0:
+            # Random reset position within bounds
+            x = random.uniform(reset_bounds["x_min"], reset_bounds["x_max"])
+            y = random.uniform(reset_bounds["y_min"], reset_bounds["y_max"])
+            z = reset_bounds["z"]
             
-            # Convert pose to tensors
-            pose_tensor = torch.tensor([pose_list[i]], device=env.device)
-            positions = pose_tensor[:, 0:3] + env.scene.env_origins[cur_env, 0:3]
-            orientations = math_utils.quat_from_euler_xyz(
-                pose_tensor[:, 3], pose_tensor[:, 4], pose_tensor[:, 5]
-            )
+            # Create reset position
+            reset_position = torch.tensor([x, y, z], device=env.device)
+            reset_position_world = reset_position + env.scene.env_origins[env_id, :3]
             
-            # Write pose to simulation
-            cube.write_root_pose_to_sim(
-                torch.cat([positions,orientations], dim=-1),
-                env_ids=torch.tensor([cur_env], device=env.device)
+            # Default orientation (no rotation)
+            reset_quat = torch.tensor([0.0, 0.0, 0.0, 1.0], device=env.device)
+            
+            # Combine position and orientation
+            reset_pose = torch.cat([reset_position_world, reset_quat])
+            
+            # Write to simulation
+            obstacle.write_root_pose_to_sim(
+                reset_pose.unsqueeze(0),
+                env_ids=torch.tensor([env_id], device=env.device)
             )
             
             # Reset velocities
-            cube.write_root_velocity_to_sim(
-                torch.zeros(1, 6, device=env.device),  # [lin_vel, ang_vel]
-                env_ids=torch.tensor([cur_env], device=env.device)
+            obstacle.write_root_velocity_to_sim(
+                torch.zeros(1, 6, device=env.device),
+                env_ids=torch.tensor([env_id], device=env.device)
+            )
+            
+        else:
+            # Handle dynamic movement during episode
+            current_time = env.episode_length_buf[env_id].float() * env.step_dt
+            time = current_time.item()
+            
+            if movement_type == "circular":
+                # Circular motion in XY plane
+                x = center_pos[0] + radius * math.cos(speed * time)
+                y = center_pos[1] + radius * math.sin(speed * time)
+                z = center_pos[2] + height_variation * math.sin(2 * speed * time)
+                
+            elif movement_type == "linear":
+                # Linear back-and-forth motion
+                x = center_pos[0] + radius * math.sin(speed * time)
+                y = center_pos[1]
+                z = center_pos[2] + height_variation * math.sin(2 * speed * time)
+                
+            elif movement_type == "diagonal":
+                # Diagonal movement within specified bounds
+                x_range = diagonal_bounds["x_max"] - diagonal_bounds["x_min"]
+                y_range = diagonal_bounds["y_max"] - diagonal_bounds["y_min"]
+                
+                # Create diagonal movement using sine wave (0 to 1)
+                t_normalized = (math.sin(speed * time) + 1) / 2  # Normalize to 0-1
+                
+                # Map to bounds
+                x = diagonal_bounds["x_min"] + t_normalized * x_range
+                y = diagonal_bounds["y_min"] + t_normalized * y_range
+                z = center_pos[2] + height_variation * math.sin(2 * speed * time)
+                
+            elif movement_type == "random_smooth":
+                # Smooth random movement using multiple sine waves
+                x = center_pos[0] + 0.1 * (math.sin(speed * time) + 0.5 * math.sin(1.7 * speed * time))
+                y = center_pos[1] + 0.1 * (math.cos(0.8 * speed * time) + 0.3 * math.cos(2.3 * speed * time))
+                z = center_pos[2] + height_variation * math.sin(1.5 * speed * time)
+            
+            else:
+                # Default to circular if unknown movement type
+                x = center_pos[0] + radius * math.cos(speed * time)
+                y = center_pos[1] + radius * math.sin(speed * time)
+                z = center_pos[2] + height_variation * math.sin(2 * speed * time)
+            
+            # Create new position tensor
+            new_position = torch.tensor([x, y, z], device=env.device)
+            
+            # Apply environment offset
+            new_position_world = new_position + env.scene.env_origins[env_id, :3]
+            
+            # Keep current orientation (no rotation)
+            current_quat = obstacle.data.root_quat_w[env_id, :]
+            
+            # Combine position and orientation
+            new_pose = torch.cat([new_position_world, current_quat])
+            
+            # Write to simulation
+            obstacle.write_root_pose_to_sim(
+                new_pose.unsqueeze(0),
+                env_ids=torch.tensor([env_id], device=env.device)
+            )
+            
+            # Reset velocities to maintain smooth motion
+            obstacle.write_root_velocity_to_sim(
+                torch.zeros(1, 6, device=env.device),
+                env_ids=torch.tensor([env_id], device=env.device)
             )
     
-    
-    
+    return {}
+
 
 def set_pick_and_place_task(
     env: ManagerBasedEnv,
@@ -454,6 +573,7 @@ def set_pick_and_place_task(
     
     return {}
 
+
 def initialize_task_stages(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
@@ -473,6 +593,7 @@ def initialize_task_stages(
         env.task_stages[cur_env] = 0  # Stage 0: Alignment above cube
     
     return {}
+
 
 def update_task_stages(
     env: ManagerBasedRLEnv,
@@ -564,15 +685,17 @@ def alignment_above_cube_complete(
         ee_rot_mat = math_utils.matrix_from_quat(ee_quat[i].unsqueeze(0)).squeeze(0)
         cube_rot_mat = math_utils.matrix_from_quat(cube_quat.unsqueeze(0)).squeeze(0)
         
-        # Extract axes
-        ee_x_axis = ee_rot_mat[:, 0]
-        ee_y_axis = ee_rot_mat[:, 1]
-        cube_y_axis = cube_rot_mat[:, 1]
-        cube_z_axis = cube_rot_mat[:, 2]
+        ee_x_axis = ee_rot_mat[:, 0]  # X-axis is first column
+        ee_y_axis = ee_rot_mat[:, 1]  # Y-axis is second column
         
-        # Calculate alignment
+        # For cube
+        cube_x_axis = cube_rot_mat[:, 0]  # Y-axis is second column
+        cube_z_axis = cube_rot_mat[:, 2]  # Z-axis is third column
+        
+        # We want negative ee_x_axis to align with positive cube_z_axis
+        # And negative ee_y_axis to align with positive cube_x_axis
         x_z_alignment = torch.abs(torch.dot(-ee_x_axis, cube_z_axis))
-        y_y_alignment = torch.abs(torch.dot(-ee_y_axis, cube_y_axis))
+        y_y_alignment = torch.abs(torch.dot(-ee_y_axis, cube_x_axis))
         alignment = torch.sqrt(x_z_alignment * y_y_alignment)
         
         # Set result if both position and orientation conditions are met
@@ -699,3 +822,230 @@ def cube_placed_at_target(
             result[i] = True
             
     return result
+
+
+
+def object_position_in_robot_root_frame(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("red_cube")
+) -> torch.Tensor:
+    """The position of the object in the robot's root frame."""
+    # Get robot for coordinate transformation
+    robot = env.scene[robot_cfg.name]
+    
+    # Initialize output tensor
+    object_pos_b = torch.zeros((env.num_envs, 3), device=env.device)
+    
+    for i in range(env.num_envs):
+        if hasattr(env, "task_info") and i in env.task_info:
+            target_info = env.task_info[i]
+            target_cube_name = target_info["target_cube"]
+            cube = env.scene[target_cube_name]
+            
+            # Get cube position in world frame
+            cube_pos_w = cube.data.root_pos_w[i, :3]
+            
+            # Transform to robot root frame
+            pos_b, _ = math_utils.subtract_frame_transforms(
+                robot.data.root_state_w[i, :3].unsqueeze(0),
+                robot.data.root_state_w[i, 3:7].unsqueeze(0),
+                cube_pos_w.unsqueeze(0)
+            )
+            object_pos_b[i] = pos_b.squeeze(0)
+    
+    return object_pos_b
+
+
+def reset_robot_when_stuck_at_table(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    table_height: float = TABLE_HEIGHT,
+    safety_margin: float = 0.05,
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    safe_poses: list = None,
+    noise_range: float = 0.02,
+):
+    """Reset robot to a safe position when it gets stuck at the table.
+    
+    Args:
+        env: The environment instance
+        env_ids: Tensor of environment IDs to reset
+        table_height: Height of the table surface
+        safety_margin: Safety margin above table surface
+        ee_frame_cfg: Configuration for the end-effector frame
+        asset_cfg: Configuration for the robot
+        safe_poses: List of safe joint poses to choose from
+        noise_range: Random noise to add to joint positions
+    """
+    # Default safe poses (well above table)
+    if safe_poses is None:
+        safe_poses = [
+            [-0.71055204, -1.3046993, 1.9, -2.23, -1.59000665, 1.76992667],  # Original safe pose
+        ]
+    
+    # Get the robot and end-effector frame
+    robot = env.scene[asset_cfg.name]
+    ee_frame = env.scene[ee_frame_cfg.name]
+    ee_position = ee_frame.data.target_pos_w[..., 0, :]
+    
+    # Check which environments have robots stuck at table
+    ee_height = ee_position[:, 2]
+    stuck_at_table = ee_height < (table_height + safety_margin)
+    
+    # Get environment IDs that are stuck
+    stuck_env_ids = []
+    for i, env_id in enumerate(env_ids.tolist()):
+        if stuck_at_table[env_id]:
+            stuck_env_ids.append(env_id)
+    
+    if len(stuck_env_ids) == 0:
+        return {}
+    
+    # print(f"Resetting stuck robots in environments: {stuck_env_ids}")
+    
+    # Reset stuck robots to safe positions
+    for env_id in stuck_env_ids:
+        # Choose a random safe pose
+        base_pose = random.choice(safe_poses)
+        
+        # Convert pose to tensor
+        joint_pos_base = torch.tensor(base_pose, device=env.device)
+        
+        # Add random noise
+        num_joints = len(base_pose)
+        noise = torch.rand(num_joints, device=env.device) * 2 * noise_range - noise_range
+        joint_pos = joint_pos_base + noise
+        joint_vel = torch.zeros_like(joint_pos)
+        
+        # Get actuatable joint indices (exclude gripper if present)
+        actuatable_joint_names = [
+            "shoulder_pan_joint",
+            "shoulder_lift_joint", 
+            "elbow_joint",
+            "wrist_1_joint",
+            "wrist_2_joint",
+            "wrist_3_joint"
+        ]
+        
+        joint_indices = []
+        for name in actuatable_joint_names:
+            if name in robot.joint_names:
+                joint_indices.append(robot.joint_names.index(name))
+        
+        # Reset robot to safe position
+        robot.set_joint_position_target(
+            joint_pos.unsqueeze(0), 
+            joint_ids=joint_indices, 
+            env_ids=torch.tensor([env_id], device=env.device)
+        )
+        robot.set_joint_velocity_target(
+            joint_vel.unsqueeze(0), 
+            joint_ids=joint_indices, 
+            env_ids=torch.tensor([env_id], device=env.device)
+        )
+        robot.write_joint_state_to_sim(
+            joint_pos.unsqueeze(0), 
+            joint_vel.unsqueeze(0), 
+            joint_ids=joint_indices, 
+            env_ids=torch.tensor([env_id], device=env.device)
+        )
+    
+    return {}
+
+
+def start_recording_on_reset(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    recorder_config: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """
+    Event function to initialize and manage recording on episode reset.
+    
+    Args:
+        env: The RL environment instance
+        env_ids: Environment IDs that are resetting
+        recorder_config: Optional recorder configuration dictionary
+        
+    Returns:
+        Empty dictionary
+    """
+    # Default recorder config
+    default_config = {
+        "enable_recording": False,
+        "output_dir": "./logs/recordings",
+        "camera_name": "tiled_camera_right",
+        "max_episodes": 5,
+        "record_video": True,
+        "record_robot_states": True,
+        "record_actions": True,
+    }
+    
+    # Merge with provided config
+    if recorder_config is not None:
+        config = {**default_config, **recorder_config}
+    else:
+        config = default_config
+    
+    # Skip if recording is disabled
+    if not config.get("enable_recording", False):
+        return {}
+    
+    try:
+        # Import recorder here to avoid circular imports
+        from .recorder import EnvironmentRecorder, RecordingEventManager
+        
+        # Initialize recorder if not exists
+        if not hasattr(env, '_recorder'):
+            env._recorder = EnvironmentRecorder(
+                env=env,
+                output_dir=config["output_dir"],
+                record_video=config["record_video"],
+                record_robot_states=config["record_robot_states"],
+                record_actions=config["record_actions"],
+                camera_name=config["camera_name"]
+            )
+            env._recording_manager = RecordingEventManager(env._recorder)
+            env._recording_manager.max_episodes = config["max_episodes"]
+            print(f"[INFO] Initialized recorder - will record up to {config['max_episodes']} episodes")
+            print(f"[INFO] Output directory: {config['output_dir']}")
+        
+        # Handle recording on reset
+        if hasattr(env, '_recording_manager'):
+            env._recording_manager.on_reset(env, env_ids)
+        
+    except ImportError as e:
+        print(f"[WARNING] Could not initialize recorder: {e}")
+        print("[WARNING] Continuing without recording...")
+    except Exception as e:
+        print(f"[ERROR] Recording initialization failed: {e}")
+        print("[ERROR] Continuing without recording...")
+    
+    return {}
+
+
+def record_step_data_event(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+) -> Dict[str, Any]:
+    """
+    Event function to record step data during episodes.
+    
+    Args:
+        env: The RL environment instance
+        env_ids: Environment IDs 
+        
+    Returns:
+        Empty dictionary
+    """
+    # This would be called as an interval event if needed
+    # For now, we handle recording in the main step loop
+    if hasattr(env, '_recording_manager') and hasattr(env, '_last_actions'):
+        try:
+            env._recording_manager.on_step(env, env._last_actions)
+        except Exception as e:
+            # Silently continue if recording fails
+            pass
+    
+    return {}

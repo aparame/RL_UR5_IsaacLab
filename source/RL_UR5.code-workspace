@@ -1,0 +1,21 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		}
+	],
+	"settings": {
+		"python.autoComplete.extraPaths": [
+			"/home/adi2440/Desktop/ur5_isaacsim/install/zed_topic_benchmark_interfaces/local/lib/python3.10/dist-packages",
+			"/home/adi2440/Desktop/ur5_isaacsim/install/RL_UR5/lib/python3.10/site-packages",
+			"/opt/ros/humble/lib/python3.10/site-packages",
+			"/opt/ros/humble/local/lib/python3.10/dist-packages"
+		],
+		"python.analysis.extraPaths": [
+			"/home/adi2440/Desktop/ur5_isaacsim/install/zed_topic_benchmark_interfaces/local/lib/python3.10/dist-packages",
+			"/home/adi2440/Desktop/ur5_isaacsim/install/RL_UR5/lib/python3.10/site-packages",
+			"/opt/ros/humble/lib/python3.10/site-packages",
+			"/opt/ros/humble/local/lib/python3.10/dist-packages"
+		]
+	}
+}
