@@ -25,14 +25,15 @@ INSTALL_REQUIRES = [
 setup(
     name="RL_UR5",
     packages=["RL_UR5"],
-    author=EXTENSION_TOML_DATA["package"]["author"],
+    author="Aditya Parameshwaran",
+    author_email = "adiparamesh@gmail.com"
     maintainer=EXTENSION_TOML_DATA["package"]["maintainer"],
     url=EXTENSION_TOML_DATA["package"]["repository"],
     version=EXTENSION_TOML_DATA["package"]["version"],
     description=EXTENSION_TOML_DATA["package"]["description"],
     keywords=EXTENSION_TOML_DATA["package"]["keywords"],
     install_requires=INSTALL_REQUIRES,
-    license="MIT",
+    license="BSD-3-Clause",
     include_package_data=True,
     python_requires=">=3.10",
     classifiers=[

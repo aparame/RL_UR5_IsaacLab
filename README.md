@@ -299,9 +299,20 @@ If you use this work in your research, please cite:
 
 ---
 
-<!-- ## 📄 License
+## 📄 License
 
-This project is released under the [BSD-3 License](LICENSE). See the LICENSE file for details. -->
+Copyright (c) 2024, [Your Name/Organization]. All rights reserved.
+
+This project is released under the [BSD-3-Clause License](LICENSE). See the [LICENSE](LICENSE) file for full details.
+
+### Third-Party Licenses
+
+This project incorporates code from:
+- **Isaac Lab**: BSD-3-Clause License
+- **NVIDIA Isaac Sim**: Subject to NVIDIA EULA
+- **Python Dependencies**: Various licenses (see `requirements.txt`)
+
+For a complete list of third-party licenses, please refer to the `docs/licenses/` directory.
 
 ---
 
