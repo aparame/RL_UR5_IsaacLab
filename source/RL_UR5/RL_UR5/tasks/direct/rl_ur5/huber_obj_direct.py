@@ -18,7 +18,6 @@ import gymnasium as gym
 
 # IsaacLab imports
 import isaaclab.sim as sim_utils
-print([attr for attr in dir(sim_utils) if 'material' in attr.lower() or 'surface' in attr.lower()])
 from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg, ViewerCfg
 from isaaclab.scene import InteractiveSceneCfg
@@ -39,7 +38,7 @@ from matplotlib.patches import Rectangle
 import os
 
 # Robot configuration
-from isaaclab_assets.robots.ur5 import UR5_GRIPPER_CFG
+from .assets.ur5 import UR5_GRIPPER_CFG
 
 # Custom utilities - with fallback
 try:
@@ -87,7 +86,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/table",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/adi2440/Desktop/ur5_isaacsim/usd/table.usd",
+            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/table.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -107,7 +106,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     arm_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/arm",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/adi2440/Desktop/ur5_isaacsim/usd/arm.usd",
+            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/arm.usd",
             scale=(0.01, 0.01, 0.01),  # Ensure no scaling
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
@@ -155,7 +154,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     i2r_plane_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/i2r_plane",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/adi2440/Desktop/ur5_isaacsim/usd/i2r_plane.usd",
+            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/i2r_plane.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -175,7 +174,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     clemson_plane_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/clemson_plane",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/adi2440/Desktop/ur5_isaacsim/usd/clemson_plane.usd",
+            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/clemson_plane.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -349,7 +348,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     
     # Visualization settings
     visualize_camera_interval = 20000  # Visualize camera every N steps
-    visualization_save_path = "/home/adi2440/Desktop/ur5_isaacsim/camera_obs"  # Path to save visualizations
+    visualization_save_path = "./visualize_camera_images"  # Path to save visualizations
 
     
     # Noise settings
@@ -1526,9 +1525,9 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         """Dump the current state vector for each env to a CSV."""
         # lazily open CSV
         if self._state_obs_file is None:
-            os.makedirs('/home/adi2440/Desktop/state_data', exist_ok=True)
+            os.makedirs('./state_data', exist_ok=True)
             fname = datetime.now().strftime("state_obs_%Y%m%d_%H%M%S.csv")
-            path = os.path.join('/home/adi2440/Desktop/state_data', fname)
+            path = os.path.join('./state_data', fname)
             self._state_obs_file = open(path, 'w', newline='')
             self._state_csv_writer = csv.writer(self._state_obs_file)
             # header: step, env_id, state_0 & state_N
@@ -1551,7 +1550,7 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         """Save the processed camera observations (normalized, cropped, resized) as PNGs."""
         # Lazily create output directory
         if self._image_obs_dir is None:
-            self._image_obs_dir = '/home/adi2440/Desktop/image_data'
+            self._image_obs_dir = './image_data'
             os.makedirs(self._image_obs_dir, exist_ok=True)
 
         step = self.common_step_counter
@@ -1626,11 +1625,11 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         # Initialize file and tracking variables if not already done
         if not hasattr(self, '_joint_targets_file'):
             # Create output directory
-            os.makedirs('/home/adi2440/Desktop/joint_targets_data', exist_ok=True)
+            os.makedirs('./joint_targets_data', exist_ok=True)
             
             # Create timestamped filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self._joint_targets_filename = f'/home/adi2440/Desktop/joint_targets_data/joint_targets_{timestamp}.csv'
+            self._joint_targets_filename = f'./joint_targets_data/joint_targets_{timestamp}.csv'
             
             # Open file and write header
             self._joint_targets_file = open(self._joint_targets_filename, 'w', newline='')

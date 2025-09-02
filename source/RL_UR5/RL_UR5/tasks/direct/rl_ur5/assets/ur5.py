@@ -12,7 +12,7 @@ from isaaclab.assets import ArticulationCfg
 
 
 # USD path with proper resolution for cross-platform compatibility
-USD_PATH = "/home/adi2440/Desktop/ur5_isaacsim/usd/ur5_moveit.usd"
+USD_PATH = "source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/ur5_moveit.usd"
 
 # Create custom UR5 robot configuration
 UR5_GRIPPER_CFG = ArticulationCfg(
