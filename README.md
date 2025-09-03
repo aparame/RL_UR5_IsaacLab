@@ -155,7 +155,7 @@ python scripts/skrl/play.py \
     --task=Isaac-UR5-HuberDirectObj-PPO \
     --num_envs 2 \
     --enable_cameras \
-    --checkpoint logs/skrl/logs/skrl_camera_pose_tracking/white_final_v6/checkpoints/best_agent.pt
+    --checkpoint logs/skrl/logs/skrl_camera_pose_tracking/arm_avoidance_v1/checkpoints/best_agent.pt
 ```
 
 ### Evaluation Arguments
