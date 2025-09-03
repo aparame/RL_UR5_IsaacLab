@@ -8,11 +8,6 @@
 **/*.dmp
 **/.thumbs
 
-# No USD files allowed in the repo
-**/*.usd
-**/*.usda
-**/*.usdc
-**/*.usdz
 
 # Python
 .DS_Store
@@ -55,7 +50,6 @@ _build
 
 # RL-Games
 **/runs/*
-**/logs/*
 **/recordings/*
 
 # Pre-Trained Checkpoints
