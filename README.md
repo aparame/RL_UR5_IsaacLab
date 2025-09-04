@@ -279,9 +279,22 @@ pip install -e source/distMARL --force-reinstall
 
 - 📚 Check the [Isaac Lab documentation](https://isaac-sim.github.io/IsaacLab)
 - 💬 Open an issue on our GitHub repository
-- 🤝 Join our Discord community for discussions
 
 ---
+
+## 🚧 Coming Soon: Real Robot Deployment
+
+We're actively working on deploying our trained policies to physical UR5 robots! The upcoming release will include:
+
+### **Planned Features**
+
+- **🤖 Real UR5 Integration**: Direct deployment pipeline from simulation to physical UR5 arm
+- **📦 Pre-trained Checkpoints**: Battle-tested models ready for real-world deployment
+- **🔌 ROS2 Bridge**: Seamless integration with ROS2 for robot control and sensor data
+- **📷 Camera Calibration**: Automated tools for camera-robot calibration
+- **🛡️ Safety Layers**: Built-in collision detection and emergency stop mechanisms
+- **📊 Real-time Monitoring**: Live visualization of robot state and vision input
+
 
 ## 📝 Citation
 
