@@ -75,7 +75,7 @@ Navigate to your project directory and install the custom distMARL package:
 conda activate isaaclab
 
 # Install the distMARL package in editable mode
-pip install -e source/distMARL
+pip install -e source/RL_UR5
 ```
 
 ### Step 4: Verify Installation
