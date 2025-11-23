@@ -33,9 +33,9 @@ This project implements vision-based reinforcement learning for the UR5 robotic 
 ## 🚀 Installation
 
 ### Prerequisites
-- Ubuntu 20.04/22.04 or Windows
+- Ubuntu 22.04 or Windows
 - NVIDIA GPU with CUDA 11.7+
-- Python 3.10
+- Python 3.11
 
 ### Source installation: Isaac Sim 5.1.0 and Isaac Lab 2.3.0
 
