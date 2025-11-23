@@ -37,57 +37,90 @@ This project implements vision-based reinforcement learning for the UR5 robotic 
 - NVIDIA GPU with CUDA 11.7+
 - Python 3.10
 
-### Step 1: Set up Isaac Lab Environment
+### Source installation: Isaac Sim 5.1.0 and Isaac Lab 2.3.0
 
-Follow the official Isaac Lab installation guide to create the conda environment:
+This repository was developed and tested with Isaac Sim 5.1.0 and Isaac Lab 2.3.0. The instructions below follow the Isaac Lab source-installation workflow and show how to build Isaac Sim from source and install Isaac Lab from source.
+
+Note: building Isaac Sim from source is an advanced workflow and requires Ubuntu 22.04 LTS or higher, Python 3.11 (for Isaac Sim 5.x) and an up-to-date NVIDIA driver/CUDA toolchain. If you prefer pre-built binaries, refer to the Isaac Lab documentation for the binaries installation instead.
+
+1) Clone and build Isaac Sim (5.1.0)
 
 ```bash
-# Clone Isaac Lab (if not already done)
+# Example workspace directory where you keep the sources
+cd $HOME
+
+# Clone Isaac Sim
+git clone https://github.com/isaac-sim/IsaacSim.git
+cd IsaacSim
+
+
+# Build Isaac Sim from source (Linux)
+./build.sh
+
+# After a successful build, set the ISAACSIM_PATH environment variable to the built release
+export ISAACSIM_PATH="${PWD}/IsaacSim"
+export ISAACSIM_PYTHON_EXE="${ISAACSIM_PATH}/python.sh"
+
+# Quick verification
+${ISAACSIM_PYTHON_EXE} -c "print('Isaac Sim configuration is now complete.')"
+${ISAACSIM_PATH}/isaac-sim.sh --help
+```
+
+2) Clone Isaac Lab (2.3.0) and link to Isaac Sim
+
+```bash
+# Move to your workspace and clone Isaac Lab
+cd $HOME
 git clone https://github.com/isaac-sim/IsaacLab.git
 cd IsaacLab
 
-# Create conda environment
+
+# Create a symbolic link in Isaac Lab pointing to the Isaac Sim built release
+# This makes the Isaac Sim modules and extensions discoverable by Isaac Lab
+ln -s ${ISAACSIM_PATH} _isaac_sim
+```
+
+3) Create / activate a Python environment for Isaac Lab
+
+Recommendation: create a dedicated environment (conda or uv). For Isaac Sim 5.x the Python runtime is 3.11 — ensure your virtual env uses the same Python minor version.
+
+```bash
+# Using the helper to create a conda environment (default name: env_isaaclab)
 ./isaaclab.sh -c
 
-# Activate the environment
-conda activate isaaclab
 
-# Install Isaac Lab and dependencies
+# Activate the environment (conda example)
+conda activate env_isaaclab
+
+```
+
+4) Install Isaac Lab extensions and learning frameworks
+
+```bash
+# Install all extensions (default). This installs the learning frameworks (rl_games, rsl_rl, sb3, skrl, robomimic, ...)
 ./isaaclab.sh -i
+
 ```
 
-Alternatively, follow the [official installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
-
-### Step 2: Install Isaac Sim
+5) Install your project dependencies (editable) and verify
 
 ```bash
-# Install Isaac Sim packages
-pip install isaacsim[all]==4.5.0 --extra-index-url https://pypi.nvidia.com
-pip install isaacsim[extscache]==4.5.0 --extra-index-url https://pypi.nvidia.com
-```
-
-### Step 3: Install Project Dependencies
-
-Navigate to your project directory and install the custom distMARL package:
-
-```bash
-# Make sure conda environment is activated
-conda activate isaaclab
-
-# Install the distMARL package in editable mode
+# From the root of this repo, with the env active
 pip install -e source/RL_UR5
+
 ```
 
-### Step 4: Verify Installation
-
-Test that everything is installed correctly:
+Notes and troubleshooting:
+- Ensure OS is Ubuntu 22.04 LTS (required for building Isaac Sim from source).
+- Isaac Sim 5.x requires Python 3.11 — the Python interpreter in your virtual environment must match the simulator's Python version.
+- If you see `ModuleNotFoundError: No module named 'isaacsim'`, ensure the virtual environment is activated and `_isaac_sim/setup_conda_env.sh` (or the corresponding setup script) has been executed.
+- If switching from older Isaac Sim versions, you may want to reset user data after the first run:
 
 ```bash
-# List available environments
-python scripts/list_envs.py | grep UR5
+${ISAACSIM_PATH}/isaac-sim.sh --reset-user
 ```
 
-You should see tasks like `Isaac-UR5-HuberDirectObj-PPO` in the output.
+If you prefer not to build from source, you can use pre-built packages for Isaac Sim (not covered here) or follow the Isaac Lab pip/binaries installation guides linked in the official docs.
 
 ---
 

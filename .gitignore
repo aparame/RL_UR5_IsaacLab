@@ -54,3 +54,6 @@ _build
 
 # Pre-Trained Checkpoints
 /.pretrained_checkpoints/
+.vscode/browse.vc.db
+.vscode/browse.vc.db-shm
+.vscode/browse.vc.db-wal
