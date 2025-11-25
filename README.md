@@ -42,7 +42,7 @@ This repository was developed and tested with Isaac Sim 5.1.0 and Isaac Lab 2.3.
 
 Note: building Isaac Sim from source is an advanced workflow and requires Ubuntu 22.04 LTS or higher, Python 3.11 (for Isaac Sim 5.x) and an up-to-date NVIDIA driver/CUDA toolchain. If you prefer pre-built binaries, refer to the Isaac Lab documentation for the binaries installation instead.
 
-1) Clone and build Isaac Sim (5.1.0)
+**1) Clone and build Isaac Sim (5.1.0)**
 
 ```bash
 # Example workspace directory where you keep the sources
@@ -65,7 +65,7 @@ ${ISAACSIM_PYTHON_EXE} -c "print('Isaac Sim configuration is now complete.')"
 ${ISAACSIM_PATH}/isaac-sim.sh --help
 ```
 
-2) Clone Isaac Lab (2.3.0) and link to Isaac Sim
+**2) Clone Isaac Lab (2.3.0) and link to Isaac Sim**
 
 ```bash
 # Move to your workspace and clone Isaac Lab
@@ -79,7 +79,7 @@ cd IsaacLab
 ln -s ${ISAACSIM_PATH} _isaac_sim
 ```
 
-3) Create / activate a Python environment for Isaac Lab
+**3) Create / activate a Python environment for Isaac Lab**
 
 Recommendation: create a dedicated environment (conda or uv). For Isaac Sim 5.x the Python runtime is 3.11 — ensure your virtual env uses the same Python minor version.
 
@@ -93,7 +93,7 @@ conda activate env_isaaclab
 
 ```
 
-4) Install Isaac Lab extensions and learning frameworks
+**4) Install Isaac Lab extensions and learning frameworks**
 
 ```bash
 # Install all extensions (default). This installs the learning frameworks (rl_games, rsl_rl, sb3, skrl, robomimic, ...)
@@ -101,7 +101,7 @@ conda activate env_isaaclab
 
 ```
 
-5) Install your project dependencies (editable) and verify
+**5) Install your project dependencies (editable) and verify**
 
 ```bash
 # From the root of this repo, with the env active
@@ -109,7 +109,7 @@ pip install -e source/RL_UR5
 
 ```
 
-6) Download the 3D assets
+**6) Download the 3D assets**
 
 Download the 3D assets from: https://clemson.box.com/s/raeoeb7gcislpjend57gj5im4q5p24h2
 
