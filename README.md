@@ -6,8 +6,18 @@
   <img src="gifs/i2r_clemson_ur5.gif" width="80%" autoplay loop>
 </div>
 
-## 🤖 Overview
+-
+6) Download the 3D assets
 
+Download the 3D assets from: https://clemson.box.com/s/raeoeb7gcislpjend57gj5im4q5p24h2
+
+Place the downloaded assets in the following folder (replace the existing assets in that folder):
+
+`/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets`
+
+Note: the assets must be downloaded and placed into the assets folder above before running the tasks or training — tasks expect these assets to be present.
+
+Notes and troubleshooting:
 This project implements vision-based reinforcement learning for the UR5 robotic manipulator in Isaac Lab, enabling precise object manipulation through camera-guided control. Our framework combines state-of-the-art physics simulation with deep reinforcement learning to achieve robust pick-and-place operations in complex environments.
 
 **Key Features:**
@@ -109,6 +119,8 @@ conda activate env_isaaclab
 pip install -e source/RL_UR5
 
 ```
+
+
 
 Notes and troubleshooting:
 - Ensure OS is Ubuntu 22.04 LTS (required for building Isaac Sim from source).
