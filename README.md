@@ -117,7 +117,37 @@ Place the downloaded assets in the following folder (replace the existing assets
 
 `/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets`
 
+
+
 Note: the assets must be downloaded and placed into the assets folder above before running the tasks or training — tasks expect these assets to be present.
+
+**7) Weights & Biases (WandB) integration (optional but recommended)**
+
+WandB is used for experiment tracking and visualizing training metrics. To enable WandB integration for this project:
+
+- Install the WandB client in the active Conda environment:
+
+```bash
+pip install wandb
+```
+
+- Login to WandB (interactive) or provide an API key via environment variable:
+
+```bash
+# interactive login (recommended for local use)
+wandb login
+
+# or set the API key in CI/headless setups
+export WANDB_API_KEY="<your_api_key_here>"
+```
+
+- Enable WandB in the project configuration at:
+
+`source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/agents/PPO_skrl_camera.yaml`
+
+Set `experiment.wandb.enabled: true` and set `experiment.wandb.project` / `experiment.wandb.entity` to your project and account. You can also enable offline logging or artifact uploads there.
+
+Note: ensure you have network access and a WandB account (or set `WANDB_API_KEY`) before running training with WandB enabled. If you prefer not to use WandB, leave `experiment.wandb.enabled` set to `false`.
 
 
 
