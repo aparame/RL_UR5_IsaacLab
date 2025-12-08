@@ -1,4 +1,4 @@
-# UR5 Robotic Manipulation with Vision-Based RL in Isaac Lab
+# Obstacle Avoidance with Vision-Based RL for Manipulators in Isaac Lab
 
 <div align="center">
   <img src="gifs/i2r_clemson_ur5.png" width="100%">
