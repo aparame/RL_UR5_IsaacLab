@@ -38,9 +38,19 @@ This project implements vision-based reinforcement learning for the UR5 robotic 
 
 ### Source installation: Isaac Sim 5.1.0 and Isaac Lab 2.3.0
 
-This repository was developed and tested with Isaac Sim 5.1.0 and Isaac Lab 2.3.0. The instructions below follow the Isaac Lab source-installation workflow and show how to build Isaac Sim from source and install Isaac Lab from source.
+This repository was developed and tested with Isaac Sim 5.1.0 and Isaac Lab 2.3.0. The instructions below follow the Isaac Lab source-installation workflow.
 
-Note: building Isaac Sim from source is an advanced workflow and requires Ubuntu 22.04 LTS or higher, Python 3.11 (for Isaac Sim 5.x) and an up-to-date NVIDIA driver/CUDA toolchain. If you prefer pre-built binaries, refer to the Isaac Lab documentation for the binaries installation instead.
+> [!IMPORTANT]
+> **Directory Structure is Critical!**
+> You must install Isaac Sim, Isaac Lab, and this repository in **three separate directories**. Do not clone one inside another.
+>
+> **Recommended Structure:**
+> ```text
+> ~/workspaces/
+> ├── IsaacSim/           # Installation 1
+> ├── IsaacLab/           # Installation 2
+> └── RL_UR5_IsaacLab/    # This Repository (Installation 3)
+> ```
 
 **1) Clone and build Isaac Sim (5.1.0)**
 
@@ -68,7 +78,7 @@ ${ISAACSIM_PATH}/isaac-sim.sh --help
 **2) Clone Isaac Lab (2.3.0) and link to Isaac Sim**
 
 ```bash
-# Move to your workspace and clone Isaac Lab
+# Move to your workspace (outside of IsaacSim) and clone Isaac Lab
 cd $HOME
 git clone https://github.com/isaac-sim/IsaacLab.git
 cd IsaacLab
@@ -101,12 +111,18 @@ conda activate env_isaaclab
 
 ```
 
-**5) Install your project dependencies (editable) and verify**
+**5) Clone and Install this Repository**
+
+Now that the base environment is set up, clone this repository in a **separate folder** (do not nest it inside IsaacLab or IsaacSim).
 
 ```bash
-# From the root of this repo, with the env active
-pip install -e source/RL_UR5
+cd $HOME
+# Clone this repository (replace URL with actual repository URL)
+git clone https://github.com/yourusername/RL_UR5_IsaacLab.git
+cd RL_UR5_IsaacLab
 
+# Install the project in editable mode
+pip install -e source/RL_UR5
 ```
 
 **6) Download the 3D assets**
