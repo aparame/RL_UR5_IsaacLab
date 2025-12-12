@@ -17,3 +17,14 @@ gym.register(
         "skrl_cfg_entry_point": f"{agents.__name__}:PPO_skrl_camera.yaml",
     },
 )
+
+gym.register(
+    id="UR5-Depth-PPO",
+    entry_point=f"{__name__}.huber_obj_direct_gray_depth:ObjCameraGrayDepthPoseTrackingDirectEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.huber_obj_direct_gray_depth:ObjCameraGrayDepthPoseTrackingDirectEnvCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:PPO_skrl_camera_gray_depth.yaml",
+    },
+)
+

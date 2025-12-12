@@ -69,8 +69,8 @@ except ImportError:
 ##
 
 @configclass
-class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
-    """Configuration for the direct RL environment."""
+class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
+    """Configuration for the direct RL environment with Gray+Depth observations."""
     
     # Visualization settings - MOVED TO TOP to fix reference issue
     debug_vis = False # Enable/disable debug visualization
@@ -86,7 +86,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/table",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/table.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/table.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -106,7 +106,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     arm_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/arm",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/arm.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/arm.usd",
             scale=(0.01, 0.01, 0.01),  # Ensure no scaling
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
@@ -154,7 +154,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     i2r_plane_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/i2r_plane",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/i2r_plane.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/i2r_plane.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -174,7 +174,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     clemson_plane_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/clemson_plane",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/clemson_plane.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/clemson_plane.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -207,28 +207,43 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
         ],
     )
     
-    # Camera
-    tiled_camera: TiledCameraCfg = TiledCameraCfg(
-        prim_path="/World/envs/env_.*/Camera",
-        data_types=["rgb"],  # No depth as requested
+    # Grayscale Camera
+    tiled_camera_gray: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/CameraGray",
+        data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
-            # ZED2 calculated parameters:
-            # fx = fy = 361.63 pixels -> focal_length = 2.955mm
-            # 1/3" CMOS sensor: 5.229 x 2.942 mm
-            focal_length=2.82706,           # Changed from 2.208
-            focus_distance=30.0,          # Keep existing (focus distance for rendering)
-            horizontal_aperture=5.229,    # Changed from 5.76 (ZED2 sensor width)
-            vertical_aperture=2.942,      # Changed from 3.24 (ZED2 sensor height)
-            clipping_range=(0.1, 1000.0)  # Keep existing
+            focal_length=2.82706,
+            focus_distance=30.0,
+            horizontal_aperture=5.229,
+            vertical_aperture=2.942,
+            clipping_range=(0.1, 1000.0)
         ),
-        # ZED2 resolution from camera_info
-        width=640,    # Matches ZED2 exactly
-        height=480,   # Matches ZED2 exactly
-        # Keep your existing camera pose
+        width=640,
+        height=480,
         offset=TiledCameraCfg.OffsetCfg(
-            pos=(1.27, -0.06, 1.143),                    # Unchanged
-            rot=(0.59637,0.37993,0.37993,0.59637),     # Unchanged
-            convention="opengl"                         # Unchanged
+            pos=(1.27, -0.06, 1.143),
+            rot=(0.59637,0.37993,0.37993,0.59637),
+            convention="opengl"
+        )
+    )
+
+    # Depth Camera
+    tiled_camera_depth: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/CameraDepth",
+        data_types=["distance_to_image_plane"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=2.82706,
+            focus_distance=30.0,
+            horizontal_aperture=5.229,
+            vertical_aperture=2.942,
+            clipping_range=(0.1, 1000.0)
+        ),
+        width=640,
+        height=480,
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(1.27, 0.0, 1.143),
+            rot=(0.59637,0.37993,0.37993,0.59637),
+            convention="opengl"
         )
     )
 
@@ -245,7 +260,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     state_space = 0
     ## For PPO
     observation_space = gym.spaces.Dict({
-        "image": gym.spaces.Box(low=float("-inf"), high=float("inf"), shape=(camera_target_height, camera_target_width, 3)),
+        "image": gym.spaces.Box(low=float("-inf"), high=float("inf"), shape=(camera_target_height, camera_target_width, 2)),
         "state": gym.spaces.Box(low=float("-inf"), high=float("inf"), shape=(state_dim,)),
     })
     
@@ -362,12 +377,12 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     robot_reset_noise_range = 0.05
 
 
-class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
-    """Direct RL environment for object camera pose tracking with multi-observation space."""
+class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
+    """Direct RL environment for object camera pose tracking with multi-observation space (Gray+Depth)."""
     
-    cfg: ObjCameraPoseTrackingDirectEnvCfg
+    cfg: ObjCameraGrayDepthPoseTrackingDirectEnvCfg
     
-    def __init__(self, cfg: ObjCameraPoseTrackingDirectEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: ObjCameraGrayDepthPoseTrackingDirectEnvCfg, render_mode: str | None = None, **kwargs):
         # Store config
         self.cfg = cfg
 
@@ -457,7 +472,9 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         """Set up the scene with robots, table, obstacles, cameras, etc."""
         # --- spawn all prims in the source environment only ---
         self._robot = Articulation(self.cfg.robot_cfg)
-        self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+        self._tiled_camera_gray = TiledCamera(self.cfg.tiled_camera_gray)
+        self._tiled_camera_depth = TiledCamera(self.cfg.tiled_camera_depth)
+
         self._ee_frame = FrameTransformer(self.cfg.ee_frame_cfg)
         self._arm = RigidObject(self.cfg.arm_cfg)
         
@@ -472,7 +489,8 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
         # --- register handles in IsaacLab's scene registry ---
         self.scene.articulations["robot"] = self._robot
-        self.scene.sensors["tiled_camera"] = self._tiled_camera
+        self.scene.sensors["tiled_camera_gray"] = self._tiled_camera_gray
+        self.scene.sensors["tiled_camera_depth"] = self._tiled_camera_depth
         self.scene.sensors["ee_frame"] = self._ee_frame
         self.scene.rigid_objects["arm"] = self._arm
         
@@ -831,12 +849,13 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         
         # Get data for specified environment
+        # raw_image is a dict/tensor depending on how we call it. Assuming it's the RGB one for now for vis.
         raw_env = raw_image[env_id].cpu().numpy()
-        processed_env = processed_image[env_id].cpu().numpy()
+        processed_env = processed_image[env_id].cpu().numpy() # (2, H, W)
         
-        # Raw image
+        # Raw image (Gray) - Displaying channel 0 of RGB input for simplicity
         axes[0].imshow(raw_env)
-        axes[0].set_title(f'Raw Camera Image (224x224)\nEnv {env_id}')
+        axes[0].set_title(f'Raw RGB (Env {env_id})')
         axes[0].axis('off')
         
         # Add crop region visualization on raw image
@@ -844,36 +863,18 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
                             224 - self.cfg.camera_crop_top - self.cfg.camera_crop_bottom,
                             linewidth=2, edgecolor='red', facecolor='none')
         axes[0].add_patch(crop_rect)
-        axes[0].text(5, self.cfg.camera_crop_top - 5, 'Crop Region', color='red', fontsize=10)
         
-        # Processed image (CHW to HWC for visualization)
-        processed_vis = processed_env.transpose(1, 2, 0)
-        
-        # Show normalized image
-        axes[1].imshow(processed_vis + 0.5)  # Add 0.5 since we subtracted mean
-        axes[1].set_title(f'Processed & Resized\n({self.cfg.camera_target_height}x{self.cfg.camera_target_width})')
+        # Processed image (Combine channels for VIS or just show Gray)
+        # Show Gray channel
+        # processed_env is (2, H, W).
+        axes[1].imshow(processed_env[0], cmap='gray')
+        axes[1].set_title(f'Processed Gray\n({self.cfg.camera_target_height}x{self.cfg.camera_target_width})')
         axes[1].axis('off')
-        
-        # Show channel statistics
+
+        # Show Depth channel
+        axes[2].imshow(processed_env[1], cmap='viridis')
+        axes[2].set_title(f'Processed Depth')
         axes[2].axis('off')
-        stats_text = f"Processed Image Statistics (Env {env_id}):\n\n"
-        stats_text += f"Shape: {processed_env.shape}\n"
-        stats_text += f"Min value: {processed_env.min():.3f}\n"
-        stats_text += f"Max value: {processed_env.max():.3f}\n"
-        stats_text += f"Mean value: {processed_env.mean():.3f}\n"
-        stats_text += f"Std value: {processed_env.std():.3f}\n\n"
-        
-        # Add current state info
-        ee_pos = self._ee_frame.data.target_pos_w[env_id, 0, :].cpu().numpy()
-        target_pos = self._target_poses[env_id, :3].cpu().numpy()
-        arm_pos = self._arm.data.root_pos_w[env_id, :3].cpu().numpy()
-        
-        stats_text += f"End-effector pos: [{ee_pos[0]:.3f}, {ee_pos[1]:.3f}, {ee_pos[2]:.3f}]\n"
-        stats_text += f"Target pos: [{target_pos[0]:.3f}, {target_pos[1]:.3f}, {target_pos[2]:.3f}]\n"
-        stats_text += f"Arm obstacle pos: [{arm_pos[0]:.3f}, {arm_pos[1]:.3f}, {arm_pos[2]:.3f}]\n"
-        
-        axes[2].text(0.1, 0.5, stats_text, transform=axes[2].transAxes, 
-                    fontsize=11, verticalalignment='center', family='monospace')
         
         plt.tight_layout()
         
@@ -889,27 +890,44 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
     
     def _get_camera_observations(self) -> torch.Tensor:
         """Get and preprocess camera observations."""
-        # Get camera data
-        camera_data = self._tiled_camera.data.output["rgb"] / 255.0  # Shape: (num_envs, H, W, C)
+        # 1. Get Grayscale Data (from RGB)
+        rgb_data = self._tiled_camera_gray.data.output["rgb"] / 255.0  # (N, H, W, 3)
+        # Convert to grayscale by averaging channels
+        gray_data = torch.mean(rgb_data, dim=-1, keepdim=True) # (N, H, W, 1)
+
+        # 2. Get Depth Data
+        depth_data = self._tiled_camera_depth.data.output["distance_to_image_plane"] # (N, H, W, 1)
         
-        # Store raw image for visualization
-        raw_camera_data = camera_data.clone()
+        # --- Fix for depth stability ---
+        # Replace infinity/nan with max range (e.g. 10.0m)
+        max_depth = 10.0
+        depth_data = torch.nan_to_num(depth_data, posinf=max_depth, neginf=0.0)
+        depth_data = torch.clamp(depth_data, 0.0, max_depth)
         
-        # Mean subtraction for normalization
-        mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
-        camera_data = camera_data - mean_tensor
+        # Normalize depth to [0, 1] range roughly to match grayscale intensity distribution
+        depth_data = depth_data / max_depth
         
-        # Crop image (top and bottom)
-        cropped = camera_data[
+        # 3. Concatenate
+        combined_data = torch.cat([gray_data, depth_data], dim=-1) # (N, H, W, 2)
+        
+        # Store raw RGB for visualization (optional)
+        raw_camera_data = rgb_data.clone()
+        
+        # 4. Mean subtraction (Center the data)
+        mean_tensor = torch.mean(combined_data, dim=(1, 2), keepdim=True)
+        combined_data = combined_data - mean_tensor
+        
+        # 5. Crop image (top and bottom)
+        cropped = combined_data[
             :,
             self.cfg.camera_crop_top:-self.cfg.camera_crop_bottom,
             :,
             :
         ]
         
-        # Resize to target size using interpolation
-        # Convert to NCHW format for processing
-        cropped = cropped.permute(0, 3, 1, 2)  # (N, C, H, W)
+        # 6. Resize
+        # Convert to NCHW for interpolation
+        cropped = cropped.permute(0, 3, 1, 2)  # (N, 2, H, W)
 
         # Resize using torch interpolation
         resized = torch.nn.functional.interpolate(
@@ -1692,12 +1710,12 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
 # Factory function for creating the environment
 def create_obj_camera_pose_tracking_env(
-    cfg: ObjCameraPoseTrackingDirectEnvCfg = None,
+    cfg: ObjCameraGrayDepthPoseTrackingDirectEnvCfg = None,
     render_mode: str = None,
     **kwargs
-) -> ObjCameraPoseTrackingDirectEnv:
+) -> ObjCameraGrayDepthPoseTrackingDirectEnv:
     """Factory function to create the environment with default config if none provided."""
     if cfg is None:
-        cfg = ObjCameraPoseTrackingDirectEnvCfg()
+        cfg = ObjCameraGrayDepthPoseTrackingDirectEnvCfg()
     
-    return ObjCameraPoseTrackingDirectEnv(cfg, render_mode=render_mode, **kwargs)
+    return ObjCameraGrayDepthPoseTrackingDirectEnv(cfg, render_mode=render_mode, **kwargs)
