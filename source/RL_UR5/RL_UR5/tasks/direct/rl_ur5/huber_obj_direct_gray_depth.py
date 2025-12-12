@@ -250,7 +250,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Basic environment settings
     episode_length_s = 6.0
     decimation = 4
-    action_scale = 0.3  # Reduced for smoother movements
+    action_scale = 0.5  # Reduced for smoother movements
     state_dim = 13
     camera_target_height = 120
     camera_target_width = 160    
@@ -336,6 +336,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     reward_torque_weight = -0.001  # Replaced torque with action penalty
     reward_table_collision_weight = -4.0
     reward_arm_avoidance_weight = 7.0  # Changed from obstacle
+    reward_action_rate_weight = -0.5  # Penalty for jagged movements
     
     # Artificial Potential Field parameters
     apf_critical_distance = 0.15  # db - critical distance for obstacle avoidance
@@ -345,10 +346,11 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Huber loss parameters
     huber_delta = 0.08  # Delta parameter for Huber loss
     
-    # Action filter settings
-    action_filter_order = 2
-    action_filter_cutoff_freq = 8.0
-    action_filter_damping_ratio = 0.707
+    
+    # Action filter settings - REMOVED
+    # action_filter_order = 2
+    # action_filter_cutoff_freq = 8.0
+    # action_filter_damping_ratio = 0.707
     
     # Termination settings
     position_threshold = 0.01
@@ -393,6 +395,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         self._state_obs_file    = None
         self._state_csv_writer  = None
         self._image_obs_dir     = None
+        self.num_actions = 6
         # Initialize parent
         super().__init__(cfg, render_mode, **kwargs)
         
@@ -424,8 +427,8 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         # Arm movement state
         self._arm_target_pos = torch.zeros((self.num_envs, 3), device=self.device)
         
-        # Initialize action filter
-        self._setup_action_filter()
+        # Initialize previous actions for smoothness penalty
+        self.previous_actions = torch.zeros((self.num_envs, self.num_actions), device=self.device)
         
         # Curriculum learning state
         self._curriculum_level = 0
@@ -515,28 +518,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         dir_light_cfg.func("/World/DirectionalLight", dir_light_cfg)
 
         
-    def _setup_action_filter(self):
-        """Initialize action filter states and coefficients."""
-        num_joints = len(self._joint_indices)
-        self._action_filter_x1 = torch.zeros((self.num_envs, num_joints), device=self.device)
-        self._action_filter_x2 = torch.zeros((self.num_envs, num_joints), device=self.device)
-        self._action_filter_y1 = torch.zeros((self.num_envs, num_joints), device=self.device)
-        self._action_filter_y2 = torch.zeros((self.num_envs, num_joints), device=self.device)
-        
-        # Calculate filter coefficients
-        if self.cfg.action_filter_order == 2:
-            omega = 2.0 * math.pi * self.cfg.action_filter_cutoff_freq
-            dt = self.cfg.sim.dt
-            k = omega * dt
-            a1 = k * k
-            a2 = k * 2.0 * self.cfg.action_filter_damping_ratio
-            a3 = a1 + a2 + 1.0
-            
-            self._filter_b0 = a1 / a3
-            self._filter_b1 = 2.0 * a1 / a3
-            self._filter_b2 = a1 / a3
-            self._filter_a1 = (2.0 * a1 - 2.0) / a3
-            self._filter_a2 = (a1 - a2 + 1.0) / a3
+
     
     def _update_curriculum_settings(self):
         """Update environment settings based on curriculum level."""
@@ -579,15 +561,21 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
     
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """Apply actions before physics step."""
+        # Update previous actions (before overwriting self.actions)
+        if hasattr(self, "actions"):
+            self.previous_actions = self.actions.clone()
+        else:
+             self.previous_actions = torch.zeros_like(actions)
+
         # Store raw actions
         self.actions = actions.clone().clamp(-1.0, 1.0)
 
         
-        # Apply action filtering
-        filtered_actions = self._apply_action_filter(self.actions)
+        # Action filter removed for direct control
+        # filtered_actions = self._apply_action_filter(self.actions)
         
         # Scale actions
-        self.actions = filtered_actions * self.cfg.action_scale
+        self.actions = self.actions * self.cfg.action_scale
         
         # Update command timer
         self._command_time_left -= self.physics_dt
@@ -640,26 +628,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
             self._robot_dof_targets, joint_ids=self._joint_indices
         )
         
-    def _apply_action_filter(self, actions: torch.Tensor) -> torch.Tensor:
-        """Apply second-order Butterworth filter to actions."""
-        if self.cfg.action_filter_order == 2:
-            filtered_actions = (
-                self._filter_b0 * actions +
-                self._filter_b1 * self._action_filter_x1 +
-                self._filter_b2 * self._action_filter_x2 -
-                self._filter_a1 * self._action_filter_y1 -
-                self._filter_a2 * self._action_filter_y2
-            )
-            
-            # Update filter memory
-            self._action_filter_x2 = self._action_filter_x1.clone()
-            self._action_filter_x1 = actions.clone()
-            self._action_filter_y2 = self._action_filter_y1.clone()
-            self._action_filter_y1 = filtered_actions.clone()
-            
-            return filtered_actions
-        else:
-            return actions
+
 
     def _sample_commands(self, env_ids: Sequence[int]) -> None:
         """Randomize the target poses for the given env indices."""
@@ -1047,6 +1016,19 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         # 6. Arm avoidance rewards (part of traditional rewards)
         arm_reward = self._compute_arm_avoidance_rewards() * self.cfg.reward_arm_avoidance_weight
         traditional_rewards += arm_reward
+
+        # 7. Action Rate Penalty (Smoothness)
+        # Penalize large changes in action between steps
+        # Use simple difference norm
+        if hasattr(self, "previous_actions"):
+            # Use raw unscaled actions for penalty calculation to be scale-invariant relative to policy output
+            # current_actions = self.actions / self.cfg.action_scale # Reconstruct or use stored?
+            # Actually, self.actions IS scaled now. Let's compare scaled actions or unscaled?
+            # Typically unscaled is better for policy smoothness, but scaled is better for physical smoothness.
+            # Using scaled actions (actual command change)
+            action_diff = self.actions - self.previous_actions
+            action_rate_penalty = torch.sum(action_diff ** 2, dim=-1)
+            traditional_rewards += action_rate_penalty * self.cfg.reward_action_rate_weight
 
         # 7 Success for reaching the end goal and avoiding the arm
         # Calculate minimum distance from end effector to arm cuboid
@@ -1444,11 +1426,9 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         # Reset target poses
         self._sample_target_poses_for_reset(env_ids)
         
-        # Reset action filter states
-        self._action_filter_x1[env_ids] = 0.0
-        self._action_filter_x2[env_ids] = 0.0
-        self._action_filter_y1[env_ids] = 0.0
-        self._action_filter_y2[env_ids] = 0.0
+        # Reset previous actions for smoothness penalty
+        if hasattr(self, "previous_actions"):
+            self.previous_actions[env_ids] = 0.0
         
         # Reset timers
         self._command_time_left[env_ids] = self.cfg.command_resampling_time

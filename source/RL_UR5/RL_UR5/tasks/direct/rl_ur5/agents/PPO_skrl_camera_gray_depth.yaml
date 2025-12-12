@@ -124,7 +124,6 @@ agent:
     wandb_kwargs:
       project: "RL_UR5"
       entity: "i2rLAB"
-      name: "Gray_Depth_Run"
 
 # Sequential trainer configuration
 trainer:

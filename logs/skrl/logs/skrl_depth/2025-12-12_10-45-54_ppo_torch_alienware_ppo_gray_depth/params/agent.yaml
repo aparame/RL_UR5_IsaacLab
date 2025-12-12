@@ -132,14 +132,13 @@ agent:
   time_limit_bootstrap: false
   experiment:
     directory: /home/adi2440/Desktop/RL_UR5_IsaacLab/logs/skrl/logs/skrl_depth
-    experiment_name: 2025-12-11_19-17-28_ppo_torch_alienware_ppo_gray_depth
+    experiment_name: 2025-12-12_10-45-54_ppo_torch_alienware_ppo_gray_depth
     write_interval: 100
     checkpoint_interval: 10000
     wandb: true
     wandb_kwargs:
       project: RL_UR5
       entity: i2rLAB
-      name: Gray_Depth_Run
 trainer:
   class: SequentialTrainer
   timesteps: 250000
