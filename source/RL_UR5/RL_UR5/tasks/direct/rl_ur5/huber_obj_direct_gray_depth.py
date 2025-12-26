@@ -80,7 +80,10 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     """Configuration for the direct RL environment with Gray+Depth observations."""
 
     # Visualization settings - MOVED TO TOP to fix reference issue
-    debug_vis = False  # Enable/disable debug visualization
+    debug_vis = True  # Enable/disable debug visualization
+
+    # AGAN Data Collection Switch
+    save_agan_images = False  # Set to True to save images for GAN training
 
     marker_cfg = FRAME_MARKER_CFG.copy()
     marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
@@ -241,7 +244,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Basic environment settings
     episode_length_s = 6.0
     decimation = 4
-    action_scale = 0.5  # Reduced for smoother movements
+    action_scale = 0.1  # Reduced for smoother movements
     state_dim = 13
     camera_target_height = 120
     camera_target_width = 160
@@ -249,7 +252,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Observation and action spaces
     action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(6,))
     state_space = 0
-    ## For PPO
+    # For PPO
     observation_space = gym.spaces.Dict(
         {
             "image": gym.spaces.Box(
@@ -336,11 +339,11 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     reward_distance_weight = -2.5
     reward_distance_tanh_weight = 1.5
     reward_distance_tanh_std = 0.1
-    reward_orientation_weight = -1.0
-    reward_torque_weight = -0.001  # Replaced torque with action penalty
+    reward_orientation_weight = -5.0  # Increased to enforce downward orientation
+    # reward_torque_weight removed
     reward_table_collision_weight = -4.0
     reward_arm_avoidance_weight = 7.0  # Changed from obstacle
-    reward_action_rate_weight = -0.5  # Penalty for jagged movements
+    reward_action_rate_weight = -1.0  # Increased penalty for jagged movements
 
     # Artificial Potential Field parameters
     apf_critical_distance = 0.15  # db - critical distance for obstacle avoidance
@@ -1061,17 +1064,8 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         orientation_reward = self.cfg.reward_orientation_weight * orientation_huber_loss
         traditional_rewards += orientation_reward
 
-        # # 4. Joint torque penalty
-        if (
-            hasattr(self._robot.data, "applied_torque")
-            and self._robot.data.applied_torque is not None
-        ):
-            joint_torques = self._robot.data.applied_torque[:, self._joint_indices]
-            torque_penalty = torch.sum(torch.square(joint_torques), dim=1)
-            torque_reward = self.cfg.reward_torque_weight * torque_penalty
-            rewards += torque_reward
-        else:
-            torque_reward = torch.zeros_like(rewards)
+        # 4. Joint torque penalty - Removed
+        # torque_reward removed from calculation
 
         # 5. Table collision penalty
         ee_height = ee_position[:, 2]
@@ -1690,26 +1684,96 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
     # -------------------------------------------------------------------------
     def _save_image_observations(self):
         """Save the processed camera observations (normalized, cropped, resized) as PNGs."""
+        # Only save if the flag is enabled
+        if not self.cfg.save_agan_images:
+            return
+
         # Lazily create output directory
         if self._image_obs_dir is None:
             self._image_obs_dir = "./image_data"
             os.makedirs(self._image_obs_dir, exist_ok=True)
 
         step = self.common_step_counter
-        # 1) Grab the processed tensor: shape (num_envs, C, H, W)
-        processed = self._get_camera_observations().cpu().numpy()
 
-        # 2) For each env, convert to H×W×C and shift back into [0,1] for saving
+        # --- 1. Fetch raw data again to avoid RL-specific mean subtraction/normalization issues ---
+        # Get Grayscale (0-1)
+        # rgb_data = self._tiled_camera_gray.data.output["rgb"]  # Unused
+
+        rgb_tensor = (
+            self._tiled_camera_gray.data.output["rgb"].float() / 255.0
+        )  # (N, H, W, 3) [0, 1]
+        gray_tensor = torch.mean(
+            rgb_tensor, dim=-1, keepdim=True
+        )  # (N, H, W, 1) [0, 1]
+
+        # Get Depth (meters)
+        depth_tensor = self._tiled_camera_depth.data.output[
+            "distance_to_image_plane"
+        ]  # (N, H, W, 1)
+
+        # Fix depth (clamp and handle inf)
+        max_depth = 3.0  # Matching user's new max_depth
+        depth_tensor = torch.nan_to_num(
+            depth_tensor, nan=max_depth, posinf=max_depth, neginf=0.0
+        )
+        depth_tensor = torch.clamp(depth_tensor, 0.0, max_depth)
+
+        # Normalize depth to [0, 1] for saving as image (will scale to 255 later)
+        depth_norm = depth_tensor / max_depth
+
+        # --- 2. Process (Crop and Resize) ---
+        # We process them together
+        # Stack: (N, H, W, 2)
+        combined_raw = torch.cat([gray_tensor, depth_norm], dim=-1)
+
+        # Crop
+        cropped = combined_raw[
+            :, self.cfg.camera_crop_top : -self.cfg.camera_crop_bottom, :, :
+        ]
+
+        # Resize
+        # Permute to NCHW for interpolate
+        cropped_nchw = cropped.permute(0, 3, 1, 2)
+
+        resized_nchw = torch.nn.functional.interpolate(
+            cropped_nchw,
+            # Use self.cfg.camera_target_height/width which are 120, 160 per user request
+            size=(self.cfg.camera_target_height, self.cfg.camera_target_width),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        processed_data = resized_nchw.permute(0, 2, 3, 1).cpu().numpy()  # (N, H, W, 2)
+
+        # --- 3. Save Images ---
         for env_id in range(self.num_envs):
-            proc = processed[env_id].transpose(1, 2, 0)  #  (H, W, C)
-            vis = np.clip(proc + 0.5, 0.0, 1.0)  # undo mean subtraction
-            fname = f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}.png"
-            path = os.path.join(self._image_obs_dir, fname)
-            plt.imsave(path, vis)
+            # Gray: Channel 0. It is [0, 1].
+            gray_img = processed_data[env_id, :, :, 0]
+            gray_img = np.clip(gray_img * 255.0, 0, 255).astype(np.uint8)
+
+            # Depth: Channel 1. It is [0, 1].
+            depth_img = processed_data[env_id, :, :, 1]
+            depth_img = np.clip(depth_img * 255.0, 0, 255).astype(np.uint8)
+
+            # Save Gray
+            fname_gray = (
+                f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}_gray.png"
+            )
+            path_gray = os.path.join(self._image_obs_dir, fname_gray)
+            plt.imsave(path_gray, gray_img, cmap="gray")
+
+            # Save Depth
+            fname_depth = (
+                f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}_depth.png"
+            )
+            path_depth = os.path.join(self._image_obs_dir, fname_depth)
+            plt.imsave(
+                path_depth, depth_img, cmap="gray"
+            )  # Save depth as grayscale intensity image
 
         if step % 10 == 0:
             print(
-                f"[SAVE] Processed images saved to {self._image_obs_dir} at step {step}"
+                f"[SAVE] Saved gray & depth images to {self._image_obs_dir} at step {step}"
             )
 
     def _debug_vis_callback(self, event):
@@ -1732,7 +1796,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
             translations=des_pos_w, orientations=des_quat_w
         )
 
-        # Calculate and update joint targets (moved outside the conditional block)
+        # Calculate metrics for logging only (do not update targets)
         ee_position = self._ee_frame.data.target_pos_w[..., 0, :]
         arm_half_extents = torch.tensor([0.25, 0.1, 0.06], device=self.device)
         arm_position = self._arm.data.root_pos_w[:, :3]
@@ -1743,20 +1807,9 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         )
         beta_values = self._compute_beta_transition(min_distances)
 
-        joint_vel = self._robot.data.joint_vel[:, self._joint_indices]
-        max_velocity = 1.5  # rad/s
-        current_joint_pos = self._robot.data.joint_pos[:, self._joint_indices]
-        velocity_command = (
-            self._robot_dof_targets - current_joint_pos
-        ) / self.physics_dt
-        velocity_command = torch.clamp(velocity_command, -max_velocity, max_velocity)
-        self._robot_dof_targets = current_joint_pos + velocity_command * self.physics_dt
-
-        # self._save_joint_targets()
-
         # # # new: save state & image
         # self._save_state_observations()
-        # self._save_image_observations()
+        self._save_image_observations()
 
         # Additionally log APF beta values for first few environments (every 10 steps)
         if self.common_step_counter % 10 == 0:
