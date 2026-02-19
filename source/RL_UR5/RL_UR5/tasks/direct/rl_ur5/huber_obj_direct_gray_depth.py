@@ -42,6 +42,10 @@ matplotlib.use("Agg")  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import os
+import json
+from PIL import Image
+import itertools
+
 
 # Robot configuration
 from .assets.ur5 import UR5_GRIPPER_CFG
@@ -80,10 +84,15 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     """Configuration for the direct RL environment with Gray+Depth observations."""
 
     # Visualization settings - MOVED TO TOP to fix reference issue
-    debug_vis = True  # Enable/disable debug visualization
+    debug_vis = False  # Enable/disable debug visualization
 
     # AGAN Data Collection Switch
-    save_agan_images = False  # Set to True to save images for GAN training
+    save_agan_images = True  # Set to True to save images for GAN training
+    agan_data_dir = "agan_dataset"
+    agan_save_interval = 3  # Save every 3rd step (30Hz / 3 = 10Hz)
+
+    # Arm dimensions for BBox approximation (approximate dimensions in meters)
+    arm_approx_dims = [0.1, 0.5, 0.1]  # Width, Length, Depth
 
     marker_cfg = FRAME_MARKER_CFG.copy()
     marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
@@ -127,7 +136,8 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(1.0, 0.0, 0.9), rot=(0.70711, 0.0, 0.70711, 0.0)
+            pos=(1.0, 0.0, 0.9),
+            rot=(0.76604, 0.0, 0.64279, 0.0),
         ),
     )
 
@@ -147,7 +157,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.2, 0.0, 0.74), rot=(0.70711, 0.0, 0.70711, 0.0)
+            pos=(0.15, 0.0, 0.74), rot=(0.70711, 0.0, 0.70711, 0.0)
         ),
     )
 
@@ -164,7 +174,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.21, -0.2, 0.93), rot=(0.50000, 0.50000, 0.50000, 0.50000)
+            pos=(0.16, -0.2, 0.93), rot=(0.50000, 0.50000, 0.50000, 0.50000)
         ),
     )
 
@@ -181,7 +191,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.21, 0.2, 0.93), rot=(0.50000, 0.50000, 0.50000, 0.50000)
+            pos=(0.16, 0.2, 0.93), rot=(0.50000, 0.50000, 0.50000, 0.50000)
         ),
     )
 
@@ -311,7 +321,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
 
     # Command/target pose settings
     target_pose_range = {
-        "x": (0.5, 0.7),
+        "x": (0.6, 0.8),
         "y": (0.45, 0.55),
         "z": (-0.2, 0.2),  # wrt base link of robot [-80mm to +320mm] irl
         "roll": (0.0, 0.0),
@@ -329,7 +339,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
 
     # Human arm movement settings
     arm_position_bounds = {
-        "x": (1.0, 1.2),
+        "x": (0.8, 1.0),
         "y": (-0.5, 0.5),
         "z": (0.80, 1.2),
     }
@@ -339,10 +349,10 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     reward_distance_weight = -2.5
     reward_distance_tanh_weight = 1.5
     reward_distance_tanh_std = 0.1
-    reward_orientation_weight = -5.0  # Increased to enforce downward orientation
+    reward_orientation_weight = -1.0  # Increased to enforce downward orientation
     # reward_torque_weight removed
     reward_table_collision_weight = -4.0
-    reward_arm_avoidance_weight = 7.0  # Changed from obstacle
+    reward_arm_avoidance_weight = 5.0  # Changed from obstacle
     reward_action_rate_weight = -1.0  # Increased penalty for jagged movements
 
     # Artificial Potential Field parameters
@@ -620,6 +630,8 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
 
         # Update debug visualization if enabled
         self._update_debug_visualization()
+
+        # Save data for GAN training
 
     def _apply_action(self) -> None:
         """Apply the processed actions to the robot with safety checks."""
@@ -949,8 +961,8 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         )
         depth_data = torch.clamp(depth_data, 0.0, max_depth)
 
-        # Normalize depth to [0, 255] range
-        depth_data = (depth_data / max_depth) * 255.0
+        # Normalize depth to [0, 1] range (consistent with gray)
+        depth_data = depth_data / max_depth
 
         # 3. Concatenate
         combined_data = torch.cat([gray_data, depth_data], dim=-1)  # (N, H, W, 2)
@@ -1680,101 +1692,214 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
             self._state_obs_file.flush()
 
     # -------------------------------------------------------------------------
-    # 3) SAVE IMAGE OBSERVATIONS
+    # 3) SAVE AGAN DATA (IMAGES + METADATA)
     # -------------------------------------------------------------------------
-    def _save_image_observations(self):
-        """Save the processed camera observations (normalized, cropped, resized) as PNGs."""
-        # Only save if the flag is enabled
-        if not self.cfg.save_agan_images:
-            return
+    def _world_to_screen(
+        self, points_3d, camera_pos, camera_quat, intrinsics, width, height
+    ):
+        """
+        Project 3D points to 2D screen coordinates.
+        points_3d: (N, 3) tensor
+        camera_pos: (3,) tensor
+        camera_quat: (4,) tensor (w, x, y, z)
+        intrinsics: (3, 3) tensor
+        """
+        # Transform to camera frame
+        # R_cw = R_wc^T
+        rot_mat = math_utils.matrix_from_quat(camera_quat)
+        points_cam = torch.matmul(points_3d - camera_pos, rot_mat)
 
-        # Lazily create output directory
-        if self._image_obs_dir is None:
-            self._image_obs_dir = "./image_data"
-            os.makedirs(self._image_obs_dir, exist_ok=True)
+        # Project to image plane: p_pix = K * (P_cam / P_cam_z)
+        # Handle division by zero
+        depths = points_cam[:, 2].clone()
+        depths[depths < 1e-5] = 1e-5
 
-        step = self.common_step_counter
+        points_2d_homo = torch.matmul(points_cam, intrinsics.T)
+        u = points_2d_homo[:, 0] / depths
+        v = points_2d_homo[:, 1] / depths
 
-        # --- 1. Fetch raw data again to avoid RL-specific mean subtraction/normalization issues ---
-        # Get Grayscale (0-1)
-        # rgb_data = self._tiled_camera_gray.data.output["rgb"]  # Unused
+        return torch.stack([u, v], dim=1)
 
-        rgb_tensor = (
-            self._tiled_camera_gray.data.output["rgb"].float() / 255.0
-        )  # (N, H, W, 3) [0, 1]
-        gray_tensor = torch.mean(
-            rgb_tensor, dim=-1, keepdim=True
-        )  # (N, H, W, 1) [0, 1]
+    def _get_camera_observations(self) -> torch.Tensor:
+        """Get and preprocess camera observations."""
+        # 1. Get Grayscale Data (from RGB)
+        rgb_data = self._tiled_camera_gray.data.output["rgb"] / 255.0  # (N, H, W, 3)
+        # Convert to grayscale by averaging channels
+        gray_data = torch.mean(rgb_data, dim=-1, keepdim=True)  # (N, H, W, 1)
 
-        # Get Depth (meters)
-        depth_tensor = self._tiled_camera_depth.data.output[
+        # 2. Get Depth Data
+        depth_data = self._tiled_camera_depth.data.output[
             "distance_to_image_plane"
         ]  # (N, H, W, 1)
 
-        # Fix depth (clamp and handle inf)
-        max_depth = 3.0  # Matching user's new max_depth
-        depth_tensor = torch.nan_to_num(
-            depth_tensor, nan=max_depth, posinf=max_depth, neginf=0.0
-        )
-        depth_tensor = torch.clamp(depth_tensor, 0.0, max_depth)
+        # --- Fix for depth stability ---
+        # Replace infinity/nan with max range (e.g. 10.0m)
+        max_depth = 10.0
+        depth_data = torch.nan_to_num(depth_data, posinf=max_depth, neginf=0.0)
+        depth_data = torch.clamp(depth_data, 0.0, max_depth)
 
-        # Normalize depth to [0, 1] for saving as image (will scale to 255 later)
-        depth_norm = depth_tensor / max_depth
+        # Normalize depth to [0, 1] range roughly to match grayscale intensity distribution
+        depth_data = depth_data / max_depth
 
-        # --- 2. Process (Crop and Resize) ---
-        # We process them together
-        # Stack: (N, H, W, 2)
-        combined_raw = torch.cat([gray_tensor, depth_norm], dim=-1)
+        # 3. Concatenate
+        combined_data = torch.cat([gray_data, depth_data], dim=-1)  # (N, H, W, 2)
 
-        # Crop
-        cropped = combined_raw[
+        # Store raw RGB for visualization (optional)
+        raw_camera_data = rgb_data.clone()
+
+        # 4. Mean subtraction (Center the data)
+        mean_tensor = torch.mean(combined_data, dim=(1, 2), keepdim=True)
+        combined_data = combined_data - mean_tensor
+
+        # 5. Crop image (top and bottom)
+        cropped = combined_data[
             :, self.cfg.camera_crop_top : -self.cfg.camera_crop_bottom, :, :
         ]
 
-        # Resize
-        # Permute to NCHW for interpolate
-        cropped_nchw = cropped.permute(0, 3, 1, 2)
+        # 6. Resize
+        # Convert to NCHW for interpolation
+        cropped = cropped.permute(0, 3, 1, 2)  # (N, 2, H, W)
 
-        resized_nchw = torch.nn.functional.interpolate(
-            cropped_nchw,
-            # Use self.cfg.camera_target_height/width which are 120, 160 per user request
+        # Resize using torch interpolation
+        resized = torch.nn.functional.interpolate(
+            cropped,
             size=(self.cfg.camera_target_height, self.cfg.camera_target_width),
             mode="bilinear",
             align_corners=False,
         )
 
-        processed_data = resized_nchw.permute(0, 2, 3, 1).cpu().numpy()  # (N, H, W, 2)
+        # Visualize camera observation periodically
+        if self.common_step_counter % self.cfg.visualize_camera_interval == 0:
+            self._visualize_camera_observation(raw_camera_data, resized, env_id=0)
 
-        # --- 3. Save Images ---
+        return resized
+
+    def _save_image_observations(self):
+        """Save images and metadata for AGAN training."""
+        # Only save if the flag is enabled
+        if not self.cfg.save_agan_images:
+            return
+
+        # Check interval (assuming control freq is 30Hz, we want 10Hz)
+        if self.common_step_counter % self.cfg.agan_save_interval != 0:
+            return
+
+        if self.run_dir is None:
+            self.run_dir = os.path.join(
+                self.cfg.agan_data_dir, f"run_{self._episode_counter}"
+            )
+            os.makedirs(self.run_dir, exist_ok=True)
+
+        step = self.common_step_counter
+
+        # 1. Get Processed Observations (N, C, H, W)
+        # Using the standard _get_camera_observations which returns mean-subtracted data
+        processed_np = self._get_camera_observations().cpu().numpy()
+
+        metadata = {}
+
+        # Arm BBox Prep
+        half_dims = torch.tensor(self.cfg.arm_approx_dims, device=self.device) * 0.5
+        corners_local = (
+            torch.tensor(list(itertools.product([-1, 1], repeat=3)), device=self.device)
+            * half_dims
+        )
+
+        # Original dimensions for BBox projection (before crop/resize)
+        orig_width = self.cfg.tiled_camera_gray.width
+        orig_height = self.cfg.tiled_camera_gray.height
+
         for env_id in range(self.num_envs):
-            # Gray: Channel 0. It is [0, 1].
-            gray_img = processed_data[env_id, :, :, 0]
-            gray_img = np.clip(gray_img * 255.0, 0, 255).astype(np.uint8)
+            # 2. Save Images
+            # Env data: (C, H, W) -> (H, W, C)
+            env_data = processed_np[env_id].transpose(1, 2, 0)
 
-            # Depth: Channel 1. It is [0, 1].
-            depth_img = processed_data[env_id, :, :, 1]
-            depth_img = np.clip(depth_img * 255.0, 0, 255).astype(np.uint8)
+            # Undo mean subtraction (add 0.5) and clip
+            # Channel 0: Gray, Channel 1: Depth
+            vis_data = np.clip(env_data + 0.5, 0.0, 1.0)
 
-            # Save Gray
-            fname_gray = (
-                f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}_gray.png"
+            gray_img = (vis_data[..., 0] * 255).astype(np.uint8)
+            depth_img = (vis_data[..., 1] * 255).astype(np.uint8)
+
+            # File names
+            prefix = f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}"
+            gray_path = os.path.join(self.run_dir, f"{prefix}_gray.png")
+            depth_path = os.path.join(self.run_dir, f"{prefix}_depth.png")
+
+            plt.imsave(gray_path, gray_img)
+            plt.imsave(depth_path, depth_img)
+
+            # 3. Calculate BBox
+            # 3D -> 2D (Original)
+            arm_pos = self._arm.data.root_pos_w[env_id]
+            arm_quat = self._arm.data.root_quat_w[env_id]
+            rot_mat_arm = math_utils.matrix_from_quat(arm_quat)
+            corners_world = torch.matmul(corners_local, rot_mat_arm.T) + arm_pos
+
+            cam_pos = self._tiled_camera_gray.data.pos_w[env_id]
+            cam_quat = self._tiled_camera_gray.data.quat_w_world[env_id]
+            intrinsics = self._tiled_camera_gray.data.intrinsic_matrices[env_id]
+
+            pts_2d = self._world_to_screen(
+                corners_world, cam_pos, cam_quat, intrinsics, orig_width, orig_height
             )
-            path_gray = os.path.join(self._image_obs_dir, fname_gray)
-            plt.imsave(path_gray, gray_img, cmap="gray")
 
-            # Save Depth
-            fname_depth = (
-                f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}_depth.png"
+            # Adjust for Crop and Resize
+            # y_new = y_old - crop_top
+            pts_2d[:, 1] -= self.cfg.camera_crop_top
+
+            # Scale
+            # crop_h = orig_h - top - bottom
+            crop_h = (
+                orig_height - self.cfg.camera_crop_top - self.cfg.camera_crop_bottom
             )
-            path_depth = os.path.join(self._image_obs_dir, fname_depth)
-            plt.imsave(
-                path_depth, depth_img, cmap="gray"
-            )  # Save depth as grayscale intensity image
+            crop_w = orig_width
+
+            scale_y = self.cfg.camera_target_height / crop_h
+            scale_x = self.cfg.camera_target_width / crop_w
+
+            pts_2d[:, 0] *= scale_x
+            pts_2d[:, 1] *= scale_y
+
+            # Bounds
+            u_min = pts_2d[:, 0].min().item()
+            u_max = pts_2d[:, 0].max().item()
+            v_min = pts_2d[:, 1].min().item()
+            v_max = pts_2d[:, 1].max().item()
+
+            # Clamp
+            u_min = max(0, min(self.cfg.camera_target_width, u_min))
+            u_max = max(0, min(self.cfg.camera_target_width, u_max))
+            v_min = max(0, min(self.cfg.camera_target_height, v_min))
+            v_max = max(0, min(self.cfg.camera_target_height, v_max))
+
+            is_valid = (
+                (u_max > u_min)
+                and (v_max > v_min)
+                and (u_max - u_min > 2)
+                and (v_max - v_min > 2)
+            )
+
+            # Metadata
+            meta_key = os.path.abspath(gray_path)
+            metadata[meta_key] = {
+                "env": env_id,
+                "step": step,
+                "bbox": [u_min, v_min, u_max, v_max],
+                "success": is_valid,
+                "arm_pos_3d": arm_pos.cpu().tolist(),
+                "episode": self._episode_counter,
+            }
 
         if step % 10 == 0:
-            print(
-                f"[SAVE] Saved gray & depth images to {self._image_obs_dir} at step {step}"
-            )
+            print(f"[SAVE] Saved AGAN data (imgs+meta) to {run_dir} at step {step}")
+
+        # Append metadata
+        jsonl_path = os.path.join(self.cfg.agan_data_dir, "metadata.jsonl")
+        with open(jsonl_path, "a") as f:
+            for k, v in metadata.items():
+                v["image_path"] = k
+                f.write(json.dumps(v) + "\n")
 
     def _debug_vis_callback(self, event):
         """Update debug visualization markers and save joint targets."""
@@ -1808,7 +1933,6 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         beta_values = self._compute_beta_transition(min_distances)
 
         # # # new: save state & image
-        # self._save_state_observations()
         self._save_image_observations()
 
         # Additionally log APF beta values for first few environments (every 10 steps)

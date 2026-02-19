@@ -4,7 +4,7 @@ seed: 42
 # Models configuration for multi-observation space
 models:
   # Use a shared model for both policy and value (separate: False)
-  separate: False
+  separate: True
   
   policy:
     class: GaussianMixin # For continuous actions
@@ -88,7 +88,7 @@ agent:
   # Core PPO parameters
   discount_factor: 0.99
   lambda: 0.95
-  learning_rate: 1.0e-04  # Reduced for stability and less jitter
+  learning_rate: 2.0e-04  # Reduced for stability and less jitter
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.01
@@ -113,13 +113,13 @@ agent:
   kl_threshold: 0.01
   rewards_shaper: 1.0
   time_limit_bootstrap: False
-  # mixed_precision: True
+  mixed_precision: True
   # Experiment tracking
   experiment:
     directory: "./logs/skrl_depth"
     experiment_name: "alienware_ppo_gray_depth"
     write_interval: 100
-    checkpoint_interval: 30000
+    checkpoint_interval: 70000
     wandb: True  # Set to True if using Weights & Biases
     wandb_kwargs:
       project: "RL_UR5"
@@ -128,5 +128,5 @@ agent:
 # Sequential trainer configuration
 trainer:
   class: SequentialTrainer
-  timesteps: 120000  # Total training timesteps
+  timesteps: 250000  # Total training timesteps
   environment_info: log

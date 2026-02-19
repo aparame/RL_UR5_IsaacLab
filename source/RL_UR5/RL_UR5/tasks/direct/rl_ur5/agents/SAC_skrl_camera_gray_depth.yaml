@@ -1,0 +1,192 @@
+# Seed for reproducibility
+seed: 42
+
+# Models configuration for multi-observation space
+models:
+  # Use separate models for policy and value (common in SAC)
+  separate: True
+  
+  policy:
+    class: GaussianMixin # For continuous actions
+    clip_actions: False
+    clip_log_std: True
+    min_log_std: -20.0
+    max_log_std: 2.0
+    initial_log_std: 0.0
+    
+    # Network architecture for multi-input (state + image)
+    network:
+      # CNN encoder for image input
+      - name: camera_features
+        input: permute(OBSERVATIONS["image"], (0, 3, 1, 2))    # This will receive the 'image' key from observation dict
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 8, stride: 4, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - conv2d: {out_channels: 128, kernel_size: 3, stride: 1, padding: 0}
+          - flatten
+          - linear: 512
+        activations: [relu, relu, relu, null, tanh]
+
+      # MLP encoder for state input
+      - name: proprioception
+        input: OBSERVATIONS["state"]  # This will receive the 'state' key from observation dict
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+
+      # Fusion layer combining CNN and MLP outputs
+      - name: net
+        input: concatenate([camera_features, proprioception])  # Combine features
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+
+    # Output specification
+    output: ACTIONS
+    
+  critic_1:
+    class: DeterministicMixin  # For Q-function estimation
+    clip_actions: False
+    
+    # Q-network architecture
+    network:
+      - name: camera_features
+        input: permute(OBSERVATIONS["image"], (0, 3, 1, 2))
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 8, stride: 4, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - conv2d: {out_channels: 128, kernel_size: 3, stride: 1, padding: 0}
+          - flatten
+          - linear: 512
+        activations: [relu, relu, relu, null, tanh]
+        
+      # MLP encoder for state input  
+      - name: proprioception
+        input: OBSERVATIONS["state"]
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+
+      # Fusion layer (SAC Q-net takes State + Action)
+      - name: net
+        input: concatenate([camera_features, proprioception]) 
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+
+    # Single value output
+    output: ONE
+
+  critic_2:
+    class: DeterministicMixin  # For Q-function estimation
+    clip_actions: False
+    
+    # Q-network architecture (same as critic_1)
+    network:
+      - name: camera_features
+        input: permute(OBSERVATIONS["image"], (0, 3, 1, 2))
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 8, stride: 4, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - conv2d: {out_channels: 128, kernel_size: 3, stride: 1, padding: 0}
+          - flatten
+          - linear: 512
+        activations: [relu, relu, relu, null, tanh]
+        
+      # MLP encoder for state input  
+      - name: proprioception
+        input: OBSERVATIONS["state"]
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+
+      # Fusion layer 
+      - name: net
+        input: concatenate([camera_features, proprioception]) 
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+
+    # Single value output
+    output: ONE
+
+  target_critic_1:
+    class: DeterministicMixin
+    clip_actions: False
+    network:
+      - name: camera_features
+        input: permute(OBSERVATIONS["image"], (0, 3, 1, 2))
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 8, stride: 4, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - conv2d: {out_channels: 128, kernel_size: 3, stride: 1, padding: 0}
+          - flatten
+          - linear: 512
+        activations: [relu, relu, relu, null, tanh]
+      - name: proprioception
+        input: OBSERVATIONS["state"]
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+      - name: net
+        input: concatenate([camera_features, proprioception]) 
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+    output: ONE
+
+  target_critic_2:
+    class: DeterministicMixin
+    clip_actions: False
+    network:
+      - name: camera_features
+        input: permute(OBSERVATIONS["image"], (0, 3, 1, 2))
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 8, stride: 4, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - conv2d: {out_channels: 128, kernel_size: 3, stride: 1, padding: 0}
+          - flatten
+          - linear: 512
+        activations: [relu, relu, relu, null, tanh]
+      - name: proprioception
+        input: OBSERVATIONS["state"]
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+      - name: net
+        input: concatenate([camera_features, proprioception]) 
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+    output: ONE
+
+# Memory configuration
+memory:
+  class: RandomMemory
+  memory_size: 10000  # Reduced for memory constraints
+
+# SAC agent configuration
+agent:
+  class: SAC
+  
+  # Core SAC parameters
+  batch_size: 64
+  discount_factor: 0.99
+  polyak: 0.005  # Target smoothing (tau)
+  learning_rate: 1.0e-04
+  learning_starts: 1000
+  
+  # Entropy regularization
+  entropy_coefficient: auto
+  target_entropy: -6.0
+
+  # Preprocessing
+  state_preprocessor: RunningStandardScaler
+  state_preprocessor_kwargs: null
+
+  # Experiment tracking
+  experiment:
+    directory: "./logs/skrl_depth_sac"
+    experiment_name: "UR5_SAC"
+    write_interval: 100
+    checkpoint_interval: 10000
+    wandb: True
+    wandb_kwargs:
+      project: "RL_UR5"
+      entity: "i2rLAB"
+
+# Sequential trainer configuration
+trainer:
+  class: SequentialTrainer
+  timesteps: 1500000
+  environment_info: log

@@ -1,0 +1,99 @@
+# Seed for reproducibility
+seed: 42
+
+# Models configuration for state-only observation space
+models:
+  # Use a shared model for both policy and value (separate: False)
+  separate: True
+  
+  policy:
+    class: GaussianMixin # For continuous actions
+    clip_actions: False
+    clip_log_std: True
+    min_log_std: -20.0
+    max_log_std: 2.0
+    initial_log_std: 0.0
+    
+    # Network architecture for input (state)
+    network:
+      # MLP encoder for state input
+      - name: net
+        input: OBSERVATIONS["state"]  # This will receive the 'state' key from observation dict
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+
+    # Output specification
+    output: ACTIONS
+    
+  value:
+    class: DeterministicMixin  # For value estimation
+    clip_actions: False
+    
+    # Network architecture
+    network:
+      # MLP encoder for state input  
+      - name: net
+        input: OBSERVATIONS["state"]  # This will receive the 'state' key from observation dict
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
+
+    # Single value output
+    output: ONE
+
+# Memory configuration
+memory:
+  class: RandomMemory
+  memory_size: -1  # Automatically determined based on rollouts
+
+# PPO agent configuration
+agent:
+  class: PPO
+  rollouts: 128  # Number of steps before update
+  learning_epochs: 10  # Number of epochs per update
+  mini_batches: 32  # Number of mini-batches per epoch
+  
+  # Core PPO parameters
+  discount_factor: 0.99
+  lambda: 0.95
+  learning_rate: 1.0e-03  # Standard for state-based PPO
+  learning_rate_scheduler: KLAdaptiveLR
+  learning_rate_scheduler_kwargs:
+    kl_threshold: 0.01
+
+  # State preprocessing (for the 'state' part of observations)
+  state_preprocessor: RunningStandardScaler
+  state_preprocessor_kwargs: null
+    
+  # Value preprocessing
+  value_preprocessor: RunningStandardScaler
+  value_preprocessor_kwargs: null
+  
+  # PPO-specific parameters
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 0.5
+  ratio_clip: 0.2
+  value_clip: 0.2
+  entropy_loss_scale: 0.0 # Lower entropy for state-based tasks usually
+  clip_predicted_values: True
+  value_loss_scale: 1.0
+  kl_threshold: 0.01
+  rewards_shaper: 1.0
+  time_limit_bootstrap: True
+  
+  # Experiment tracking
+  experiment:
+    directory: "./logs/skrl_simple"
+    experiment_name: "UR5_Simple"
+    write_interval: 100
+    checkpoint_interval: 10000
+    wandb: True  # Set to True if using Weights & Biases
+    wandb_kwargs:
+      project: "RL_UR5"
+      entity: "i2rLAB"
+
+# Sequential trainer configuration
+trainer:
+  class: SequentialTrainer
+  timesteps: 250000  # Total training timesteps
+  environment_info: log
