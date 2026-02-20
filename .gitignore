@@ -31,6 +31,7 @@ docker/.container.cfg
 
 # Outputs
 **/output/*
+**/agan_dataset/*
 **/outputs/*
 **/videos/*
 **/wandb/*
@@ -57,3 +58,5 @@ _build
 .vscode/browse.vc.db
 .vscode/browse.vc.db-shm
 .vscode/browse.vc.db-wal
+
+

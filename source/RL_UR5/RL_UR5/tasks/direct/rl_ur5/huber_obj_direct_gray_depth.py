@@ -92,7 +92,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     agan_save_interval = 3  # Save every 3rd step (30Hz / 3 = 10Hz)
 
     # Arm dimensions for BBox approximation (approximate dimensions in meters)
-    arm_approx_dims = [0.1, 0.5, 0.1]  # Width, Length, Depth
+    arm_approx_dims = [0.2, 0.65, 0.1]  # Width, Length, Depth
 
     marker_cfg = FRAME_MARKER_CFG.copy()
     marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
@@ -137,7 +137,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=(1.0, 0.0, 0.9),
-            rot=(0.76604, 0.0, 0.64279, 0.0),
+            rot=(0.9, 0.0, 0.484, 0.0),
         ),
     )
 
@@ -339,9 +339,9 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
 
     # Human arm movement settings
     arm_position_bounds = {
-        "x": (0.8, 1.0),
+        "x": (0.9, 1.1),
         "y": (-0.5, 0.5),
-        "z": (0.80, 1.2),
+        "z": (0.7, 1.0),
     }
     arm_movement_speed = 0.3  # Speed of random movement
 
@@ -806,7 +806,10 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
             local_pos = torch.tensor([new_x, new_y, new_z], device=self.device)
             arm_positions[i, :3] = local_pos + self.scene.env_origins[i, :3]
 
-        # Apply new poses (keep original orientation)
+        # Apply new poses with fixed orientation quaternion (w, x, y, z)
+        fixed_quat = torch.tensor([0.0, 0.99144, -0.0, -0.13053], device=self.device)
+        fixed_quat = fixed_quat / torch.norm(fixed_quat)  # normalize
+        arm_quats = fixed_quat.unsqueeze(0).expand(self.num_envs, -1)
         self._arm.write_root_pose_to_sim(torch.cat([arm_positions, arm_quats], dim=-1))
 
         # Calculate and set velocities for smooth physics
@@ -1707,7 +1710,15 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         # Transform to camera frame
         # R_cw = R_wc^T
         rot_mat = math_utils.matrix_from_quat(camera_quat)
-        points_cam = torch.matmul(points_3d - camera_pos, rot_mat)
+        points_cam = torch.matmul(points_3d - camera_pos, rot_mat.T)
+
+        # Convert OpenGL (Isaac) to OpenCV (Pinhole) convention
+        # OpenGL: -Z forward, +Y up
+        # OpenCV: +Z forward, +Y down
+        # x_cv = x_gl, y_cv = -y_gl, z_cv = -z_gl
+        points_cam = points_cam * torch.tensor(
+            [1.0, -1.0, -1.0], device=points_cam.device
+        )
 
         # Project to image plane: p_pix = K * (P_cam / P_cam_z)
         # Handle division by zero
@@ -1772,134 +1783,130 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         if self.common_step_counter % self.cfg.visualize_camera_interval == 0:
             self._visualize_camera_observation(raw_camera_data, resized, env_id=0)
 
+        # --- AGAN Data Saving (Integrated) ---
+        if self.cfg.save_agan_images and (
+            self.common_step_counter % self.cfg.agan_save_interval == 0
+        ):
+            # Ensure directory exists
+            if self._image_obs_dir is None:
+                self._image_obs_dir = os.path.join(
+                    self.cfg.agan_data_dir, f"run_{self._episode_counter}"
+                )
+                os.makedirs(self._image_obs_dir, exist_ok=True)
+
+            step = self.common_step_counter
+            processed_np = resized.cpu().numpy()
+            metadata = {}
+
+            # Arm BBox Prep
+            half_dims = torch.tensor(self.cfg.arm_approx_dims, device=self.device) * 0.5
+            corners_local = (
+                torch.tensor(
+                    list(itertools.product([-1, 1], repeat=3)), device=self.device
+                )
+                * half_dims
+            )
+
+            # Original dimensions for BBox projection (before crop/resize)
+            orig_width = self.cfg.tiled_camera_gray.width
+            orig_height = self.cfg.tiled_camera_gray.height
+
+            for env_id in range(self.num_envs):
+                # Save Images
+                # Env data: (C, H, W) -> (H, W, C)
+                env_data = processed_np[env_id].transpose(1, 2, 0)
+
+                # Undo mean subtraction (add 0.5) and clip
+                vis_data = np.clip(env_data + 0.5, 0.0, 1.0)
+
+                gray_img = (vis_data[..., 0] * 255).astype(np.uint8)
+                depth_img = (vis_data[..., 1] * 255).astype(np.uint8)
+
+                # File names
+                prefix = f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}"
+                gray_path = os.path.join(self._image_obs_dir, f"{prefix}_gray.png")
+                depth_path = os.path.join(self._image_obs_dir, f"{prefix}_depth.png")
+
+                Image.fromarray(gray_img).save(gray_path)
+                Image.fromarray(depth_img).save(depth_path)
+
+                # Calculate BBox
+                # 3D -> 2D (Original)
+                arm_pos = self._arm.data.root_pos_w[env_id]
+                arm_quat = self._arm.data.root_quat_w[env_id]
+                rot_mat_arm = math_utils.matrix_from_quat(arm_quat)
+                corners_world = torch.matmul(corners_local, rot_mat_arm.T) + arm_pos
+
+                cam_pos = self._tiled_camera_gray.data.pos_w[env_id]
+                cam_quat = self._tiled_camera_gray.data.quat_w_world[env_id]
+                intrinsics = self._tiled_camera_gray.data.intrinsic_matrices[env_id]
+
+                pts_2d = self._world_to_screen(
+                    corners_world,
+                    cam_pos,
+                    cam_quat,
+                    intrinsics,
+                    orig_width,
+                    orig_height,
+                )
+
+                # Adjust for Crop and Resize
+                pts_2d[:, 1] -= self.cfg.camera_crop_top
+
+                crop_h = (
+                    orig_height - self.cfg.camera_crop_top - self.cfg.camera_crop_bottom
+                )
+                crop_w = orig_width
+
+                scale_y = self.cfg.camera_target_height / crop_h
+                scale_x = self.cfg.camera_target_width / crop_w
+
+                pts_2d[:, 0] *= scale_x
+                pts_2d[:, 1] *= scale_y
+
+                # Bounds
+                u_min = pts_2d[:, 0].min().item()
+                u_max = pts_2d[:, 0].max().item()
+                v_min = pts_2d[:, 1].min().item()
+                v_max = pts_2d[:, 1].max().item()
+
+                # Clamp
+                u_min = max(0, min(self.cfg.camera_target_width, u_min))
+                u_max = max(0, min(self.cfg.camera_target_width, u_max))
+                v_min = max(0, min(self.cfg.camera_target_height, v_min))
+                v_max = max(0, min(self.cfg.camera_target_height, v_max))
+
+                is_valid = (
+                    (u_max > u_min)
+                    and (v_max > v_min)
+                    and (u_max - u_min > 2)
+                    and (v_max - v_min > 2)
+                )
+
+                # Metadata
+                meta_key = os.path.abspath(gray_path)
+                metadata[meta_key] = {
+                    "env": env_id,
+                    "step": step,
+                    "bbox": [u_min, v_min, u_max, v_max],
+                    "success": is_valid,
+                    "arm_pos_3d": arm_pos.cpu().tolist(),
+                    "episode": self._episode_counter,
+                }
+
+            if step % 10 == 0:
+                print(
+                    f"[SAVE] Saved AGAN data (imgs+meta) to {self._image_obs_dir} at step {step}"
+                )
+
+            # Append metadata
+            jsonl_path = os.path.join(self.cfg.agan_data_dir, "metadata.jsonl")
+            with open(jsonl_path, "a") as f:
+                for k, v in metadata.items():
+                    v["image_path"] = k
+                    f.write(json.dumps(v) + "\n")
+
         return resized
-
-    def _save_image_observations(self):
-        """Save images and metadata for AGAN training."""
-        # Only save if the flag is enabled
-        if not self.cfg.save_agan_images:
-            return
-
-        # Check interval (assuming control freq is 30Hz, we want 10Hz)
-        if self.common_step_counter % self.cfg.agan_save_interval != 0:
-            return
-
-        if self.run_dir is None:
-            self.run_dir = os.path.join(
-                self.cfg.agan_data_dir, f"run_{self._episode_counter}"
-            )
-            os.makedirs(self.run_dir, exist_ok=True)
-
-        step = self.common_step_counter
-
-        # 1. Get Processed Observations (N, C, H, W)
-        # Using the standard _get_camera_observations which returns mean-subtracted data
-        processed_np = self._get_camera_observations().cpu().numpy()
-
-        metadata = {}
-
-        # Arm BBox Prep
-        half_dims = torch.tensor(self.cfg.arm_approx_dims, device=self.device) * 0.5
-        corners_local = (
-            torch.tensor(list(itertools.product([-1, 1], repeat=3)), device=self.device)
-            * half_dims
-        )
-
-        # Original dimensions for BBox projection (before crop/resize)
-        orig_width = self.cfg.tiled_camera_gray.width
-        orig_height = self.cfg.tiled_camera_gray.height
-
-        for env_id in range(self.num_envs):
-            # 2. Save Images
-            # Env data: (C, H, W) -> (H, W, C)
-            env_data = processed_np[env_id].transpose(1, 2, 0)
-
-            # Undo mean subtraction (add 0.5) and clip
-            # Channel 0: Gray, Channel 1: Depth
-            vis_data = np.clip(env_data + 0.5, 0.0, 1.0)
-
-            gray_img = (vis_data[..., 0] * 255).astype(np.uint8)
-            depth_img = (vis_data[..., 1] * 255).astype(np.uint8)
-
-            # File names
-            prefix = f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}"
-            gray_path = os.path.join(self.run_dir, f"{prefix}_gray.png")
-            depth_path = os.path.join(self.run_dir, f"{prefix}_depth.png")
-
-            plt.imsave(gray_path, gray_img)
-            plt.imsave(depth_path, depth_img)
-
-            # 3. Calculate BBox
-            # 3D -> 2D (Original)
-            arm_pos = self._arm.data.root_pos_w[env_id]
-            arm_quat = self._arm.data.root_quat_w[env_id]
-            rot_mat_arm = math_utils.matrix_from_quat(arm_quat)
-            corners_world = torch.matmul(corners_local, rot_mat_arm.T) + arm_pos
-
-            cam_pos = self._tiled_camera_gray.data.pos_w[env_id]
-            cam_quat = self._tiled_camera_gray.data.quat_w_world[env_id]
-            intrinsics = self._tiled_camera_gray.data.intrinsic_matrices[env_id]
-
-            pts_2d = self._world_to_screen(
-                corners_world, cam_pos, cam_quat, intrinsics, orig_width, orig_height
-            )
-
-            # Adjust for Crop and Resize
-            # y_new = y_old - crop_top
-            pts_2d[:, 1] -= self.cfg.camera_crop_top
-
-            # Scale
-            # crop_h = orig_h - top - bottom
-            crop_h = (
-                orig_height - self.cfg.camera_crop_top - self.cfg.camera_crop_bottom
-            )
-            crop_w = orig_width
-
-            scale_y = self.cfg.camera_target_height / crop_h
-            scale_x = self.cfg.camera_target_width / crop_w
-
-            pts_2d[:, 0] *= scale_x
-            pts_2d[:, 1] *= scale_y
-
-            # Bounds
-            u_min = pts_2d[:, 0].min().item()
-            u_max = pts_2d[:, 0].max().item()
-            v_min = pts_2d[:, 1].min().item()
-            v_max = pts_2d[:, 1].max().item()
-
-            # Clamp
-            u_min = max(0, min(self.cfg.camera_target_width, u_min))
-            u_max = max(0, min(self.cfg.camera_target_width, u_max))
-            v_min = max(0, min(self.cfg.camera_target_height, v_min))
-            v_max = max(0, min(self.cfg.camera_target_height, v_max))
-
-            is_valid = (
-                (u_max > u_min)
-                and (v_max > v_min)
-                and (u_max - u_min > 2)
-                and (v_max - v_min > 2)
-            )
-
-            # Metadata
-            meta_key = os.path.abspath(gray_path)
-            metadata[meta_key] = {
-                "env": env_id,
-                "step": step,
-                "bbox": [u_min, v_min, u_max, v_max],
-                "success": is_valid,
-                "arm_pos_3d": arm_pos.cpu().tolist(),
-                "episode": self._episode_counter,
-            }
-
-        if step % 10 == 0:
-            print(f"[SAVE] Saved AGAN data (imgs+meta) to {run_dir} at step {step}")
-
-        # Append metadata
-        jsonl_path = os.path.join(self.cfg.agan_data_dir, "metadata.jsonl")
-        with open(jsonl_path, "a") as f:
-            for k, v in metadata.items():
-                v["image_path"] = k
-                f.write(json.dumps(v) + "\n")
 
     def _debug_vis_callback(self, event):
         """Update debug visualization markers and save joint targets."""
@@ -1931,9 +1938,6 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
             ee_position, arm_position, arm_quat, arm_half_extents
         )
         beta_values = self._compute_beta_transition(min_distances)
-
-        # # # new: save state & image
-        self._save_image_observations()
 
         # Additionally log APF beta values for first few environments (every 10 steps)
         if self.common_step_counter % 10 == 0:

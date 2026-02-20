@@ -4,7 +4,7 @@ seed: 42
 # Models configuration for multi-observation space
 models:
   # Use a shared model for both policy and value (separate: False)
-  separate: True
+  separate: False
   
   policy:
     class: GaussianMixin # For continuous actions
@@ -30,14 +30,14 @@ models:
       # MLP encoder for state input
       - name: proprioception
         input: OBSERVATIONS["state"]  # This will receive the 'state' key from observation dict
-        layers: [128, 64]
-        activations: [relu, relu]
+        layers: [256,128, 64]
+        activations: [relu, relu, relu]
 
       # Fusion layer combining CNN and MLP outputs
       - name: net
         input: concatenate([camera_features, proprioception])  # Combine features
-        layers: [128, 64]
-        activations: [relu, relu]
+        layers: [256,128, 64]
+        activations: [relu, relu, relu]
 
     # Output specification
     output: ACTIONS
@@ -61,14 +61,14 @@ models:
       # MLP encoder for state input  
       - name: proprioception
         input: OBSERVATIONS["state"]  # This will receive the 'state' key from observation dict
-        layers: [128, 64]
-        activations: [relu, relu]
+        layers: [256,128, 64]
+        activations: [relu, relu, relu]
 
       # Fusion layer
       - name: net
         input: concatenate([camera_features, proprioception]) 
-        layers: [128, 64]
-        activations: [relu, relu]
+        layers: [256, 128, 64]
+        activations: [relu, relu, relu]
 
     # Single value output
     output: ONE
