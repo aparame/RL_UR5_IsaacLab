@@ -38,6 +38,16 @@ gym.register(
     },
 )
 
+gym.register(
+    id="UR5-Depth-DR-PPO",
+    entry_point=f"{__name__}.huber_obj_direct_depth_dr:ObjCameraGrayDepthDRPoseTrackingDirectEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.huber_obj_direct_depth_dr:ObjCameraGrayDepthDRPoseTrackingDirectEnvCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:PPO_skrl_camera_gray_depth.yaml",
+    },
+)
+
 
 gym.register(
     id="UR5-Simple-PPO",
@@ -55,5 +65,15 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.ur5_calibration_env:UR5CalibrationEnvCfg",
+    },
+)
+
+gym.register(
+    id="UR5-AGAN-Data-Collection-PPO",
+    entry_point=f"{__name__}.agan_data_collection_direct_gray_depth:AGANDataCollectionEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.agan_data_collection_direct_gray_depth:AGANDataCollectionEnvCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:PPO_skrl_camera_gray_depth.yaml",
     },
 )

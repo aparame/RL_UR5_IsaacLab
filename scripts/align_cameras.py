@@ -1,352 +1,179 @@
 #!/usr/bin/env python3
+import cv2
+import numpy as np
 import rclpy
 from rclpy.node import Node
-import cv2
-import cv2.aruco as aruco
-import numpy as np
-from cv_bridge import CvBridge, CvBridgeError
-from sensor_msgs.msg import Image, CameraInfo
-import sys
+from sensor_msgs.msg import CompressedImage, Image
+from cv_bridge import CvBridge
+from rclpy.qos import qos_profile_sensor_data
+import threading
+import argparse
 
-class CharucoAlignmentNode(Node):
-    def __init__(self):
-        super().__init__('charuco_alignment_node')
-        
-        # --- Configuration (Matches create_charuco.py) ---
-        self.squares_x = 5
-        self.squares_y = 7
-        self.square_length = 0.035  # meters
-        self.marker_length = 0.026  # meters
-        self.dictionary = aruco.getPredefinedDictionary(aruco.DICT_6X6_250)
-        
-        # --- Compatibility Setup ---
-        self.use_new_api = False
-        if hasattr(aruco, 'CharucoDetector'):
-            self.use_new_api = True
-            self.get_logger().info("Using OpenCV 4.7+ CharucoDetector API")
-        else:
-            self.get_logger().info("Using Legacy OpenCV Aruco API")
 
-        # --- Detector Parameters for Difficult Angles ---
-        self.det_params = aruco.DetectorParameters() if hasattr(aruco, 'DetectorParameters') else aruco.DetectorParameters_create()
-        self.det_params.cornerRefinementMethod = aruco.CORNER_REFINE_SUBPIX
-        self.det_params.minMarkerPerimeterRate = 0.01  # Detect smaller markers (due to perspective foreshortening)
-        self.det_params.adaptiveThreshWinSizeStep = 5
-        self.det_params.adaptiveThreshWinSizeMin = 3
-        self.det_params.adaptiveThreshWinSizeMax = 23
-        
-        # Create Charuco Board
-        if self.use_new_api:
-            self.board = aruco.CharucoBoard((self.squares_x, self.squares_y), 
-                                            self.square_length, 
-                                            self.marker_length, 
-                                            self.dictionary)
-            self.charuco_detector = aruco.CharucoDetector(self.board, detectorParams=self.det_params)
-        else:
-            try:
-                self.board = aruco.CharucoBoard_create(self.squares_x, self.squares_y, 
-                                                       self.square_length, 
-                                                       self.marker_length, 
-                                                       self.dictionary)
-            except AttributeError:
-                # Fallback
-                self.board = aruco.CharucoBoard((self.squares_x, self.squares_y), 
-                                                self.square_length, 
-                                                self.marker_length, 
-                                                self.dictionary)
-
-        # Utils
+class AlignmentTool(Node):
+    def __init__(self, ref_image_path):
+        super().__init__("camera_align_tool")
         self.bridge = CvBridge()
-        
-        # State
-        self.real_image = None
-        self.sim_image = None
-        self.real_cam_info = None
-        self.sim_cam_info = None
-        
-        # Topics
-        self.real_image_topic = '/zed/zed_node/rgb/color/rect/image'
-        self.real_info_topic = '/zed/zed_node/rgb/color/rect/camera_info'
-        self.sim_image_topic = '/rgb_left_node/rgb_left'
-        self.sim_info_topic = '/rgb_left_node/camera_info' 
-        
-        # Subscribers
-        self.create_subscription(Image, self.real_image_topic, self.real_image_callback, 10)
-        self.create_subscription(CameraInfo, self.real_info_topic, self.real_info_callback, 10)
-        self.create_subscription(Image, self.sim_image_topic, self.sim_image_callback, 10)
-        self.create_subscription(CameraInfo, self.sim_info_topic, self.sim_info_callback, 10)
-        
-        print(f"Waiting for images on:\n REAL: {self.real_image_topic}\n SIM:  {self.sim_image_topic}")
 
-        # Timer for processing and display
-        self.create_timer(0.1, self.process_and_display) # 10 Hz
+        # Load reference
+        ref_image = cv2.imread(ref_image_path)
+        if ref_image is None:
+            self.get_logger().error(
+                f"Could not load reference image from {ref_image_path}"
+            )
+            raise Exception("Failed to load reference image")
 
-    def real_image_callback(self, msg):
+        # Target shape is from policy (120x160)
+        self.target_h, self.target_w = 120, 160
+
+        # Extract the middle Gray panel from the reference plot (which is 3 side-by-side plots)
+        # We'll just display the full reference image in a separate window to avoid parsing matplotlib layout
+        self.ref_image = cv2.resize(ref_image, (1200, 400))
+
+        self.latest_rgb = None
+        self.latest_depth = None
+        self.lock = threading.Lock()
+
+        self.rgb_sub = self.create_subscription(
+            CompressedImage,
+            "/zed/zed_node/rgb/color/rect/image/compressed",
+            self.rgb_callback,
+            qos_profile_sensor_data,
+        )
+
+        self.depth_sub = self.create_subscription(
+            Image,
+            "/zed/zed_node/depth/depth_registered",
+            self.depth_callback,
+            qos_profile_sensor_data,
+        )
+
+    def rgb_callback(self, msg):
         try:
-            self.real_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        except CvBridgeError as e:
-            self.get_logger().error(f"CV Bridge (Real) Error: {e}")
+            np_arr = np.frombuffer(msg.data, np.uint8)
+            cv_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            with self.lock:
+                self.latest_rgb = cv_img
+        except Exception as e:
+            self.get_logger().error(f"RGB Error: {e}")
 
-    def sim_image_callback(self, msg):
+    def depth_callback(self, msg):
         try:
-            # Isaac Sim sometimes sends rgb8 or rgba8
-            if msg.encoding == 'rgba8':
-                image = self.bridge.imgmsg_to_cv2(msg, "rgba8")
-                self.sim_image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
-            else:
-                self.sim_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        except CvBridgeError as e:
-            self.get_logger().error(f"CV Bridge (Sim) Error: {e}")
+            if msg.encoding == "32FC1":
+                depth_img = np.frombuffer(msg.data, dtype=np.float32).reshape(
+                    (msg.height, msg.width)
+                )
+                depth_img = np.nan_to_num(depth_img, nan=20.0, posinf=20.0, neginf=0.3)
 
-    def real_info_callback(self, msg):
-        self.real_cam_info = msg
+                # Normalize exactly like the Sim [0.3, 20.0] -> [0, 1]
+                depth_img = np.clip(depth_img, 0.3, 20.0)
+                norm_depth = (depth_img - 0.3) / (20.0 - 0.3)
 
-    def sim_info_callback(self, msg):
-        self.sim_cam_info = msg
-        
-    def get_cam_matrix_dist(self, cam_info_msg):
-        if cam_info_msg is None:
+                with self.lock:
+                    self.latest_depth = norm_depth
+        except Exception as e:
+            self.get_logger().error(f"Depth Error: {e}")
+
+    def get_processed_frames(self):
+        with self.lock:
+            rgb = self.latest_rgb.copy() if self.latest_rgb is not None else None
+            depth = self.latest_depth.copy() if self.latest_depth is not None else None
+
+        if rgb is None:
             return None, None
-            
-        # Use Projection matrix 'P' if available and looks valid (not all zeros)
-        # P is 3x4 (12 elements). We want the 3x3 intrinsic part.
-        p_mat = np.array(cam_info_msg.p).reshape((3, 4))
-        k_mat = np.array(cam_info_msg.k).reshape((3, 3))
-        
-        # Check if P is populated (usually P[0,0] > 0)
-        if p_mat[0,0] > 0:
-            mtx = p_mat[:, :3]
-            dist = np.zeros(5) # Rectified images have no distortion
-        else:
-            mtx = k_mat
-            dist = np.array(cam_info_msg.d)
-            
-        return mtx, dist
 
-    def detect_and_estimate(self, image, cam_info, label):
-        if image is None:
-            return None, None, image
+        # Matching process logic from ur5_gym_env.py
+        gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
+        gray_norm = gray.astype(np.float32) / 255.0
 
-        display_image = image.copy()
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        charuco_corners = None
-        charuco_ids = None
-        
-        # Detection
-        if self.use_new_api:
-            charuco_corners, charuco_ids, marker_corners, marker_ids = self.charuco_detector.detectBoard(image)
-        else:
-            try:
-                corners, ids, rejected = aruco.detectMarkers(gray, self.dictionary, parameters=self.det_params)
-                if len(corners) > 0:
-                    retval, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
-                        corners, ids, gray, self.board)
-            except AttributeError:
-                if hasattr(aruco, "ArucoDetector"):
-                     detector = aruco.ArucoDetector(self.dictionary, self.det_params)
-                     corners, ids, rejected = detector.detectMarkers(gray)
-                     if len(corners) > 0:
-                         retval, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
-                            corners, ids, gray, self.board)
-                else: 
-                     return None, None, display_image
+        if depth is None:
+            depth = np.zeros_like(gray_norm)
+        elif depth.shape != gray_norm.shape:
+            depth = cv2.resize(
+                depth,
+                (gray_norm.shape[1], gray_norm.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
 
-        # Drawing - customized per user request
-        # For SIM: we can keep standard drawing or minimal. 
-        # For REAL: User explicitly asked to NOT show all ids/markers.
-        if label == "SIM":
-            if charuco_corners is not None and len(charuco_corners) > 0:
-                aruco.drawDetectedCornersCharuco(display_image, charuco_corners, charuco_ids)
+        # Combine [2, H, W]
+        combined = np.stack([gray_norm, depth], axis=0)
 
-        rvec = None
-        tvec = None
+        # Interpolate to 640x480
+        # (Opencv expects HWC for operations, so we manually do it per channel)
+        gray_640 = cv2.resize(combined[0], (640, 480), interpolation=cv2.INTER_LINEAR)
+        depth_640 = cv2.resize(combined[1], (640, 480), interpolation=cv2.INTER_LINEAR)
 
-        if charuco_corners is not None and len(charuco_corners) > 0:
-             mtx, dist = self.get_cam_matrix_dist(cam_info)
-             
-             if mtx is not None:
-                 valid = False
-                 if self.use_new_api:
-                     try:
-                         obj_points, img_points = self.board.matchImagePoints(charuco_corners, charuco_ids)
-                         if len(obj_points) >= 4:
-                             valid, rvec, tvec = cv2.solvePnP(obj_points, img_points, mtx, dist)
-                     except Exception:
-                         pass
-                 else:
-                     try:
-                         valid, rvec, tvec = aruco.estimatePoseCharucoBoard(
-                             charuco_corners, charuco_ids, self.board, mtx, dist, None, None)
-                     except AttributeError:
-                         pass
-                 
-                 # Draw Axes for SIM only in its own view
-                 if valid and label == "SIM":
-                     cv2.drawFrameAxes(display_image, mtx, dist, rvec, tvec, 0.1)
+        # Crop Top 60, Bottom 20
+        gray_crop = gray_640[60:-20, :]
+        depth_crop = depth_640[60:-20, :]
 
-        return rvec, tvec, display_image
+        # Target Resize
+        final_gray = cv2.resize(
+            gray_crop, (self.target_w, self.target_h), interpolation=cv2.INTER_LINEAR
+        )
+        final_depth = cv2.resize(
+            depth_crop, (self.target_w, self.target_h), interpolation=cv2.INTER_LINEAR
+        )
 
-    def process_and_display(self):
-        r_rvec, r_tvec, r_disp = self.detect_and_estimate(self.real_image, self.real_cam_info, "REAL")
-        s_rvec, s_tvec, s_disp = self.detect_and_estimate(self.sim_image, self.sim_cam_info, "SIM")
-        
-        aligned = False
-        dist_diff = 1000.0 # Default high
-        ang_diff = 1000.0
-        
-        # --- Check Alignment & Stats ---
-        if r_tvec is not None and s_tvec is not None:
-            # Calculate difference
-            t_diff = r_tvec.flatten() - s_tvec.flatten()
-            dist_diff = np.linalg.norm(t_diff)
-            
-            r_diff = r_rvec.flatten() - s_rvec.flatten()
-            ang_diff = np.linalg.norm(r_diff)
-            
-            # Thresholds for "Green" dot
-            pos_thresh = 0.02 # 2cm
-            rot_thresh = 0.1  # ~5.7 degrees
-            
-            if dist_diff < pos_thresh and ang_diff < rot_thresh:
-                aligned = True
-            
-            # Print debug for user
-            print(f"REAL: {r_tvec.flatten()} | SIM: {s_tvec.flatten()} | DIFF: {dist_diff:.3f}", end='\r')
+        # Mean subtraction per channel as executed by tensor
+        final_gray = final_gray - np.mean(final_gray)
+        final_depth = final_depth - np.mean(final_depth)
 
-        # --- Draw REAL Overlays (User Requests) ---
-        if r_disp is not None:
-            r_mtx, r_dist = self.get_cam_matrix_dist(self.real_cam_info)
-            
-            # 1. Overlay SIM Frame onto REAL Image (2D to 2D Projection)
-            # Instead of using Real Intrinsics (which might differ), we take the 2D pixels 
-            # of the board in the Sim View and overlay them on the Real View.
-            # This creates a visual "Ghost" target that is robust to intrinsic differences.
-            if s_tvec is not None and self.sim_image is not None:
-                s_h, s_w = self.sim_image.shape[:2]
-                r_h, r_w = r_disp.shape[:2]
-                
-                # Get Sim Intrinsics
-                s_mtx, s_dist = self.get_cam_matrix_dist(self.sim_cam_info)
-                
-                if s_mtx is not None:
-                    try:
-                        # Define Board Outline in Board Frame
-                        w = self.squares_x * self.square_length
-                        h = self.squares_y * self.square_length
-                        board_corners_3d = np.array([
-                            [0, 0, 0],
-                            [w, 0, 0],
-                            [w, h, 0],
-                            [0, h, 0]
-                        ], dtype=np.float32)
-                        
-                        # Project to Sim Image (UV)
-                        s_img_pts, _ = cv2.projectPoints(board_corners_3d, s_rvec, s_tvec, s_mtx, s_dist)
-                        
-                        # Scale UVs to Real Image Resolution
-                        # This assumes we want to match the "relative screen position"
-                        scale_x = r_w / float(s_w)
-                        scale_y = r_h / float(s_h)
-                        
-                        s_img_pts_scaled = s_img_pts.copy()
-                        s_img_pts_scaled[:, :, 0] *= scale_x
-                        s_img_pts_scaled[:, :, 1] *= scale_y
-                        
-                        # Draw Cyan Ghost on Real Image
-                        cv2.polylines(r_disp, [s_img_pts_scaled.astype(int)], True, (0, 255, 255), 2)
-                        cv2.putText(r_disp, "TARGET (Sim Ghost)", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                        
-                    except Exception as e:
-                       print(f"Overlay Error: {e}")
+        return final_gray, final_depth
 
-            # 2. Draw Single Dot for Real Board
-            if r_tvec is not None and r_mtx is not None:
-                # Calculate center of board
-                # Board Origin is usually bottom-left corner. Center is roughly half widths.
-                # X axis is horizontal, Y is vertical on board.
-                center_local_3d = np.array([
-                    (self.squares_x * self.square_length) / 2.0,
-                    (self.squares_y * self.square_length) / 2.0,
-                    0.0
-                ])
-                
-                try:
-                    # Project this point to image
-                    img_pts, _ = cv2.projectPoints(center_local_3d.reshape(1,3), r_rvec, r_tvec, r_mtx, r_dist)
-                    center_px = tuple(img_pts[0][0].astype(int))
-                    
-                    # Color: Green if aligned, Red otherwise
-                    color = (0, 255, 0) if aligned else (0, 0, 255)
-                    
-                    # Draw Dot
-                    cv2.circle(r_disp, center_px, 8, color, -1) # Filled circle
-                    cv2.circle(r_disp, center_px, 10, (255, 255, 255), 2) # White outline for visibility
-                except Exception:
-                    pass
-        
-        # --- Visualization Layout ---
-        if r_disp is not None and s_disp is not None:
-            # 1. Image Row
-            h1, w1 = r_disp.shape[:2]
-            h2, w2 = s_disp.shape[:2]
-            
-            if h1 != h2 and h2 > 0:
-                scale = h1 / float(h2)
-                w2_new = int(w2 * scale)
-                s_disp = cv2.resize(s_disp, (w2_new, h1))
-            
-            cv2.putText(r_disp, "REAL CAMERA", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            cv2.putText(s_disp, "SIMULATION", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-            
-            images_row = np.hstack((r_disp, s_disp))
-            total_w = images_row.shape[1]
-            
-            # Reduced Stats Panel
-            panel_h = 100
-            stats_panel = np.zeros((panel_h, total_w, 3), dtype=np.uint8)
-            
-            info_text = "Align the Red Dot to the Target Frame"
-            if aligned:
-                info_text = "ALIGNED! (Green)"
-                
-            cv2.putText(stats_panel, info_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0) if aligned else (0,0,255), 2)
-            
-            if r_tvec is not None and s_tvec is not None:
-                err_text = f"Err: {dist_diff*100:.1f} cm, {np.degrees(ang_diff):.1f} deg"
-                cv2.putText(stats_panel, err_text, (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
-            else:
-                cv2.putText(stats_panel, "Detecting...", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 150, 150), 2)
 
-            final_img = np.vstack((images_row, stats_panel))
-            cv2.imshow("Charuco Alignment Tool", final_img)
-            cv2.waitKey(1)
-            
-        elif r_disp is not None:
-            cv2.putText(r_disp, "Waiting for Sim...", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
-            cv2.imshow("Charuco Alignment Tool", r_disp)
-            cv2.waitKey(1)
-        elif s_disp is not None:
-             cv2.putText(s_disp, "Waiting for Real...", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
-             cv2.imshow("Charuco Alignment Tool", s_disp)
-             cv2.waitKey(1)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--ref", type=str, required=True, help="Path to Isaac Lab reference image"
+    )
+    args = parser.parse_args()
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = CharucoAlignmentNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        # Robust shutdown
-        try:
-            if rclpy.ok():
-                node.destroy_node()
-                rclpy.shutdown()
-        except Exception:
-            pass
-        cv2.destroyAllWindows()
+    rclpy.init()
+    node = AlignmentTool(args.ref)
 
-if __name__ == '__main__':
+    executor = rclpy.executors.SingleThreadedExecutor()
+    executor.add_node(node)
+
+    thread = threading.Thread(target=executor.spin, daemon=True)
+    thread.start()
+
+    print("Starting Alignment Interface...")
+    print("Press 'q' or 'ESC' to exit")
+
+    cv2.namedWindow("Isaac Reference", cv2.WINDOW_NORMAL)
+    cv2.imshow("Isaac Reference", node.ref_image)
+
+    while True:
+        gray, depth = node.get_processed_frames()
+        if gray is not None:
+            # Shift back for visualization
+            viz_gray = np.clip(gray + 0.5, 0, 1)
+            viz_gray = (viz_gray * 255).astype(np.uint8)
+
+            # Map depth to color map
+            viz_depth = np.clip(depth + 0.5, 0, 1)
+            viz_depth_color = cv2.applyColorMap(
+                (viz_depth * 255).astype(np.uint8), cv2.COLORMAP_VIRIDIS
+            )
+
+            # Upscale for better viewing
+            display_scale = 4
+            d_gray = cv2.resize(viz_gray, (0, 0), fx=display_scale, fy=display_scale)
+            d_depth = cv2.resize(
+                viz_depth_color, (0, 0), fx=display_scale, fy=display_scale
+            )
+
+            cv2.imshow("ZED2 Processed Gray (Match to center pic)", d_gray)
+            cv2.imshow("ZED2 Processed Depth (Match to right pic)", d_depth)
+
+        key = cv2.waitKey(30)
+        if key in [27, ord("q")]:
+            break
+
+    cv2.destroyAllWindows()
+    rclpy.shutdown()
+
+
+if __name__ == "__main__":
     main()

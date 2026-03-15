@@ -80,7 +80,7 @@ except ImportError:
 
 
 @configclass
-class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
+class ObjCameraGrayDepthDRPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     """Configuration for the direct RL environment with Gray+Depth observations."""
 
     # Visualization settings - MOVED TO TOP to fix reference issue
@@ -225,7 +225,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
         width=640,
         height=480,
         offset=TiledCameraCfg.OffsetCfg(
-            pos=(1.5, -0.06, 1.143),
+            pos=(1.25, -0.06, 1.143),
             rot=(0.59637, 0.37993, 0.37993, 0.59637),
             convention="opengl",
         ),
@@ -245,7 +245,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
         width=640,
         height=480,
         offset=TiledCameraCfg.OffsetCfg(
-            pos=(1.5, -0.06, 1.143),
+            pos=(1.25, -0.06, 1.143),
             rot=(0.59637, 0.37993, 0.37993, 0.59637),
             convention="opengl",
         ),
@@ -354,6 +354,9 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     reward_table_collision_weight = -4.0
     reward_arm_avoidance_weight = 5.0  # Changed from obstacle
     reward_action_rate_weight = -1.0  # Increased penalty for jagged movements
+    reward_action_acceleration_weight = (
+        -0.5
+    )  # Replaces torque weight, smoothing temporal jitter
 
     # Artificial Potential Field parameters
     apf_critical_distance = 0.15  # db - critical distance for obstacle avoidance
@@ -362,6 +365,14 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
 
     # Huber loss parameters
     huber_delta = 0.08  # Delta parameter for Huber loss
+
+    # Domain Randomization (ZED2 characteristics)
+    depth_noise_std = 0.01  # Standard deviation for depth Gaussian noise
+    depth_dropout_prob = (
+        0.05  # Probability of dropping a depth pixel (simulating sparsity)
+    )
+    depth_min_range = 0.3  # Min depth range in meters (ZED2 min optimal)
+    depth_max_range = 20.0  # Max depth range in meters (ZED2 max optimal)
 
     # Action filter settings - REMOVED
     # action_filter_order = 2
@@ -394,14 +405,14 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     robot_reset_noise_range = 0.05
 
 
-class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
-    """Direct RL environment for object camera pose tracking with multi-observation space (Gray+Depth)."""
+class ObjCameraGrayDepthDRPoseTrackingDirectEnv(DirectRLEnv):
+    """Direct RL environment for object camera pose tracking with multi-observation space (Gray+Depth) and Domain Randomization."""
 
-    cfg: ObjCameraGrayDepthPoseTrackingDirectEnvCfg
+    cfg: ObjCameraGrayDepthDRPoseTrackingDirectEnvCfg
 
     def __init__(
         self,
-        cfg: ObjCameraGrayDepthPoseTrackingDirectEnvCfg,
+        cfg: ObjCameraGrayDepthDRPoseTrackingDirectEnvCfg,
         render_mode: str | None = None,
         **kwargs,
     ):
@@ -453,6 +464,9 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
 
         # Initialize previous actions for smoothness penalty
         self.previous_actions = torch.zeros(
+            (self.num_envs, self.num_actions), device=self.device
+        )
+        self.previous_action_diffs = torch.zeros(
             (self.num_envs, self.num_actions), device=self.device
         )
 
@@ -594,9 +608,21 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         """Apply actions before physics step."""
         # Update previous actions (before overwriting self.actions)
         if hasattr(self, "actions"):
-            self.previous_actions = self.actions.clone()
+            # Update action difference for second-order penalty (acceleration)
+            if hasattr(self, "previous_actions"):
+                self.previous_action_diffs = self.actions - self.previous_actions
+
+            # Clone only if temporal penalty weights are not zero to save memory
+            if (
+                self.cfg.reward_action_rate_weight != 0.0
+                or self.cfg.reward_action_acceleration_weight != 0.0
+            ):
+                self.previous_actions = self.actions.clone()
+            else:
+                self.previous_actions = self.actions
         else:
             self.previous_actions = torch.zeros_like(actions)
+            self.previous_action_diffs = torch.zeros_like(actions)
 
         # Store raw actions
         self.actions = actions.clone().clamp(-1.0, 1.0)
@@ -729,9 +755,8 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
                 0, 3, (self.num_envs,), device=self.device
             )  # 0: X-axis, 1: Y-axis, 2: diagonal
 
-        # Get current arm positions and orientations
+        # Get current arm positions
         arm_positions = self._arm.data.root_pos_w.clone()
-        arm_quats = self._arm.data.root_quat_w.clone()
 
         # Update motion time
         self._arm_motion_time += self.physics_dt
@@ -944,62 +969,6 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
 
         self._vis_counter += 1
 
-    def _get_camera_observations(self) -> torch.Tensor:
-        """Get and preprocess camera observations."""
-        # 1. Get Grayscale Data (from RGB)
-        rgb_data = self._tiled_camera_gray.data.output["rgb"] / 255.0  # (N, H, W, 3)
-        # Convert to grayscale by averaging channels
-        gray_data = torch.mean(rgb_data, dim=-1, keepdim=True)  # (N, H, W, 1)
-
-        # 2. Get Depth Data
-        depth_data = self._tiled_camera_depth.data.output[
-            "distance_to_image_plane"
-        ]  # (N, H, W, 1)
-
-        # --- Fix for depth stability ---
-        # Replace infinity/nan with max range (e.g. 3.0m)
-        max_depth = 3.0
-        depth_data = torch.nan_to_num(
-            depth_data, nan=max_depth, posinf=max_depth, neginf=0.0
-        )
-        depth_data = torch.clamp(depth_data, 0.0, max_depth)
-
-        # Normalize depth to [0, 1] range (consistent with gray)
-        depth_data = depth_data / max_depth
-
-        # 3. Concatenate
-        combined_data = torch.cat([gray_data, depth_data], dim=-1)  # (N, H, W, 2)
-
-        # Store raw RGB for visualization (optional)
-        raw_camera_data = rgb_data.clone()
-
-        # 4. Mean subtraction (Center the data)
-        mean_tensor = torch.mean(combined_data, dim=(1, 2), keepdim=True)
-        combined_data = combined_data - mean_tensor
-
-        # 5. Crop image (top and bottom)
-        cropped = combined_data[
-            :, self.cfg.camera_crop_top : -self.cfg.camera_crop_bottom, :, :
-        ]
-
-        # 6. Resize
-        # Convert to NCHW for interpolation
-        cropped = cropped.permute(0, 3, 1, 2)  # (N, 2, H, W)
-
-        # Resize using torch interpolation
-        resized = torch.nn.functional.interpolate(
-            cropped,
-            size=(self.cfg.camera_target_height, self.cfg.camera_target_width),
-            mode="bilinear",
-            align_corners=False,
-        )
-
-        # Visualize camera observation periodically
-        if self.common_step_counter % self.cfg.visualize_camera_interval == 0:
-            self._visualize_camera_observation(raw_camera_data, resized, env_id=0)
-
-        return resized
-
     def _huber_loss(self, x: torch.Tensor, delta: float) -> torch.Tensor:
         """Compute Huber loss for robust distance penalty."""
         abs_x = torch.abs(x)
@@ -1100,22 +1069,24 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         )
         traditional_rewards += arm_reward
 
-        # 7. Action Rate Penalty (Smoothness)
+        # 7. Action Rate and Acceleration Penalty (Smoothness & Temporal Jitter)
         # Penalize large changes in action between steps
-        # Use simple difference norm
         if hasattr(self, "previous_actions"):
-            # Use raw unscaled actions for penalty calculation to be scale-invariant relative to policy output
-            # current_actions = self.actions / self.cfg.action_scale # Reconstruct or use stored?
-            # Actually, self.actions IS scaled now. Let's compare scaled actions or unscaled?
-            # Typically unscaled is better for policy smoothness, but scaled is better for physical smoothness.
-            # Using scaled actions (actual command change)
             action_diff = self.actions - self.previous_actions
             action_rate_penalty = torch.sum(action_diff**2, dim=-1)
             traditional_rewards += (
                 action_rate_penalty * self.cfg.reward_action_rate_weight
             )
 
-        # 7 Success for reaching the end goal and avoiding the arm
+            # Second-order temporal penalty (prevents jitter)
+            if hasattr(self, "previous_action_diffs"):
+                action_acceleration = action_diff - self.previous_action_diffs
+                acceleration_penalty = torch.sum(action_acceleration**2, dim=-1)
+                traditional_rewards += (
+                    acceleration_penalty * self.cfg.reward_action_acceleration_weight
+                )
+
+        # 8 Success for reaching the end goal and avoiding the arm
         # Calculate minimum distance from end effector to arm cuboid
         # Arm dimensions (half-extents for easier calculation)
         arm_half_extents = torch.tensor(
@@ -1511,6 +1482,57 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
             joint_pos, joint_vel, joint_ids=self._joint_indices, env_ids=env_ids
         )
 
+        # --- Camera Domain Randomization ---
+        # Commented out as requested by the user
+        # Apply small ±0.1m position offset and ±0.15 rad orientation offset to cameras
+        # camera_noise_pos = (
+        #     torch.rand(num_resets, 3, device=self.device) * 2.0 - 1.0
+        # ) * 0.1
+        # # Randomize roll, pitch, yaw within ±0.15 radians
+        # camera_noise_euler = (
+        #     torch.rand(num_resets, 3, device=self.device) * 2.0 - 1.0
+        # ) * 0.15
+        #
+        # camera_noise_quat = math_utils.quat_from_euler_xyz(
+        #     camera_noise_euler[:, 0], camera_noise_euler[:, 1], camera_noise_euler[:, 2]
+        # )
+        #
+        # # Base offsets for gray camera
+        # base_gray_pos = torch.tensor(
+        #     self.cfg.tiled_camera_gray.offset.pos, device=self.device
+        # ).repeat(num_resets, 1)
+        # base_gray_quat = torch.tensor(
+        #     self.cfg.tiled_camera_gray.offset.rot, device=self.device
+        # ).repeat(num_resets, 1)
+        #
+        # # Base offsets for depth camera
+        # base_depth_pos = torch.tensor(
+        #     self.cfg.tiled_camera_depth.offset.pos, device=self.device
+        # ).repeat(num_resets, 1)
+        # base_depth_quat = torch.tensor(
+        #     self.cfg.tiled_camera_depth.offset.rot, device=self.device
+        # ).repeat(num_resets, 1)
+        #
+        # # Get environment origins
+        # env_origins = self.scene.env_origins[env_ids, :3]
+        #
+        # # Apply noise and env origins to base offsets
+        # # Add position noise and translate by env_origins
+        # new_gray_pos = env_origins + base_gray_pos + camera_noise_pos
+        # new_depth_pos = env_origins + base_depth_pos + camera_noise_pos
+        #
+        # # Add orientation noise by applying local rotation noise to base rotation
+        # new_gray_quat = math_utils.quat_mul(base_gray_quat, camera_noise_quat)
+        # new_depth_quat = math_utils.quat_mul(base_depth_quat, camera_noise_quat)
+        #
+        # # Set transformations for reset environments
+        # self._tiled_camera_gray.set_world_poses(
+        #     new_gray_pos, new_gray_quat, env_ids=env_ids
+        # )
+        # self._tiled_camera_depth.set_world_poses(
+        #     new_depth_pos, new_depth_quat, env_ids=env_ids
+        # )
+
         # Reset arm position and orientation targets
         for i, env_id in enumerate(env_ids):
             # Random position within bounds
@@ -1672,6 +1694,12 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
     # -------------------------------------------------------------------------
     def _save_state_observations(self):
         """Dump the current state vector for each env to a CSV."""
+        if (
+            getattr(self.cfg, "save_agan_images", False) is False
+            and getattr(self.cfg, "debug_vis", False) is False
+        ):
+            return
+
         # lazily open CSV
         if self._state_obs_file is None:
             os.makedirs("./state_data", exist_ok=True)
@@ -1755,8 +1783,19 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         # 3. Concatenate
         combined_data = torch.cat([gray_data, depth_data], dim=-1)  # (N, H, W, 2)
 
-        # Store raw RGB for visualization (optional)
-        raw_camera_data = rgb_data.clone()
+        # Visualize camera observation periodically or save AGAN data
+        needs_raw_rgb = (
+            self.common_step_counter % self.cfg.visualize_camera_interval == 0
+            or (
+                self.cfg.save_agan_images
+                and self.common_step_counter % self.cfg.agan_save_interval == 0
+            )
+        )
+        if needs_raw_rgb:
+            # Store raw RGB for visualization (optional)
+            raw_camera_data = rgb_data.clone()
+        else:
+            raw_camera_data = None
 
         # 4. Mean subtraction (Center the data)
         mean_tensor = torch.mean(combined_data, dim=(1, 2), keepdim=True)
@@ -1780,7 +1819,10 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         )
 
         # Visualize camera observation periodically
-        if self.common_step_counter % self.cfg.visualize_camera_interval == 0:
+        if (
+            raw_camera_data is not None
+            and self.common_step_counter % self.cfg.visualize_camera_interval == 0
+        ):
             self._visualize_camera_observation(raw_camera_data, resized, env_id=0)
 
         # --- AGAN Data Saving (Integrated) ---
@@ -1949,6 +1991,11 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
 
     def _save_joint_targets(self):
         """Save joint targets for all environments at current timestep."""
+        if (
+            getattr(self.cfg, "save_agan_images", False) is False
+            and getattr(self.cfg, "debug_vis", False) is False
+        ):
+            return
 
         # Initialize file and tracking variables if not already done
         if not hasattr(self, "_joint_targets_file"):

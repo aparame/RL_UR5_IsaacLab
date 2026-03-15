@@ -80,15 +80,15 @@ except ImportError:
 
 
 @configclass
-class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
+class AGANDataCollectionEnvCfg(DirectRLEnvCfg):
     """Configuration for the direct RL environment with Gray+Depth observations."""
 
     # Visualization settings - MOVED TO TOP to fix reference issue
     debug_vis = False  # Enable/disable debug visualization
 
     # AGAN Data Collection Switch
-    save_agan_images = False  # Set to True to save images for GAN training
-    agan_data_dir = "agan_dataset"
+    save_agan_images = True  # Set to True to save images for GAN training
+    agan_data_dir = "agan_dataset_run_2"
     agan_save_interval = 3  # Save every 3rd step (30Hz / 3 = 10Hz)
 
     # Arm dimensions for BBox approximation (approximate dimensions in meters)
@@ -225,7 +225,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
         width=640,
         height=480,
         offset=TiledCameraCfg.OffsetCfg(
-            pos=(1.5, -0.06, 1.143),
+            pos=(1.27, -0.06, 1.143),
             rot=(0.59637, 0.37993, 0.37993, 0.59637),
             convention="opengl",
         ),
@@ -245,7 +245,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
         width=640,
         height=480,
         offset=TiledCameraCfg.OffsetCfg(
-            pos=(1.5, -0.06, 1.143),
+            pos=(1.27, 0.0, 1.143),
             rot=(0.59637, 0.37993, 0.37993, 0.59637),
             convention="opengl",
         ),
@@ -300,7 +300,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     viewer = ViewerCfg(eye=(7.5, 7.5, 7.5), origin_type="world", env_index=0)
 
     # Curriculum learning settings
-    curriculum_enabled = True
+    curriculum_enabled = False
     curriculum_steps = [
         5000,
         10000,
@@ -343,7 +343,7 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
         "y": (-0.5, 0.5),
         "z": (0.7, 1.0),
     }
-    arm_movement_speed = 0.3  # Speed of random movement
+    arm_movement_speed = 0.5  # Speed of random movement
 
     # Reward settings
     reward_distance_weight = -2.5
@@ -394,14 +394,14 @@ class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     robot_reset_noise_range = 0.05
 
 
-class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
+class AGANDataCollectionEnv(DirectRLEnv):
     """Direct RL environment for object camera pose tracking with multi-observation space (Gray+Depth)."""
 
-    cfg: ObjCameraGrayDepthPoseTrackingDirectEnvCfg
+    cfg: AGANDataCollectionEnvCfg
 
     def __init__(
         self,
-        cfg: ObjCameraGrayDepthPoseTrackingDirectEnvCfg,
+        cfg: AGANDataCollectionEnvCfg,
         render_mode: str | None = None,
         **kwargs,
     ):
@@ -721,90 +721,64 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
             )
 
     def _update_arm_position(self):
-        """Update the human arm position with simple linear motion pattern."""
+        """Update the human arm position with Lissajous curve motion pattern for dense coverage."""
         # Initialize motion parameters if not exists
         if not hasattr(self, "_arm_motion_time"):
             self._arm_motion_time = torch.zeros(self.num_envs, device=self.device)
-            self._arm_motion_pattern = torch.randint(
-                0, 3, (self.num_envs,), device=self.device
-            )  # 0: X-axis, 1: Y-axis, 2: diagonal
+            # Add unique phase offsets per environment so they explore different parts of space
+            self._phase_offsets_x = (
+                torch.rand(self.num_envs, device=self.device) * 2 * math.pi
+            )
+            self._phase_offsets_y = (
+                torch.rand(self.num_envs, device=self.device) * 2 * math.pi
+            )
+            self._phase_offsets_z = (
+                torch.rand(self.num_envs, device=self.device) * 2 * math.pi
+            )
+
+            # Use non-commensurate frequencies for dense Lissajous coverage
+            base_freq = self.cfg.arm_movement_speed
+            self._freq_x = base_freq * 0.31
+            self._freq_y = base_freq * 0.43
+            self._freq_z = base_freq * 0.59
 
         # Get current arm positions and orientations
         arm_positions = self._arm.data.root_pos_w.clone()
-        arm_quats = self._arm.data.root_quat_w.clone()
 
         # Update motion time
         self._arm_motion_time += self.physics_dt
 
-        for i in range(self.num_envs):
-            # Calculate base position (center of motion range)
-            base_x = (
-                self.cfg.arm_position_bounds["x"][0]
-                + self.cfg.arm_position_bounds["x"][1]
-            ) / 2
-            base_y = (
-                self.cfg.arm_position_bounds["y"][0]
-                + self.cfg.arm_position_bounds["y"][1]
-            ) / 2
-            base_z = (
-                self.cfg.arm_position_bounds["z"][0]
-                + self.cfg.arm_position_bounds["z"][1]
-            ) / 2
+        # Calculate bounding box centers and amplitudes
+        bounds_x = self.cfg.arm_position_bounds["x"]
+        bounds_y = self.cfg.arm_position_bounds["y"]
+        bounds_z = self.cfg.arm_position_bounds["z"]
 
-            # Calculate motion amplitudes
-            amp_x = (
-                (
-                    self.cfg.arm_position_bounds["x"][1]
-                    - self.cfg.arm_position_bounds["x"][0]
-                )
-                / 2
-                * 0.8
-            )
-            amp_y = (
-                (
-                    self.cfg.arm_position_bounds["y"][1]
-                    - self.cfg.arm_position_bounds["y"][0]
-                )
-                / 2
-                * 0.8
-            )
-            amp_z = (
-                (
-                    self.cfg.arm_position_bounds["z"][1]
-                    - self.cfg.arm_position_bounds["z"][0]
-                )
-                / 2
-                * 0.8
-            )
+        center_x = (bounds_x[0] + bounds_x[1]) / 2.0
+        center_y = (bounds_y[0] + bounds_y[1]) / 2.0
+        center_z = (bounds_z[0] + bounds_z[1]) / 2.0
 
-            # Linear motion with triangle wave (back and forth)
-            # Period of 4 seconds for complete back-and-forth motion
-            period = 6.0
-            phase = (self._arm_motion_time[i] % period) / period
+        amp_x = (bounds_x[1] - bounds_x[0]) / 2.0
+        amp_y = (bounds_y[1] - bounds_y[0]) / 2.0
+        amp_z = (bounds_z[1] - bounds_z[0]) / 2.0
 
-            # Triangle wave: 0->1->0
-            if phase < 0.5:
-                motion_factor = phase * 2.0
-            else:
-                motion_factor = 2.0 - phase * 2.0
+        # Calculate positions using sine waves for Lissajous curves
+        t = self._arm_motion_time
 
-            # Apply motion pattern
-            if self._arm_motion_pattern[i] == 0:  # X-axis motion
-                new_x = base_x + (motion_factor - 0.5) * 2 * amp_x
-                new_y = base_y
-                new_z = base_z
-            elif self._arm_motion_pattern[i] == 1:  # Y-axis motion
-                new_x = base_x
-                new_y = base_y + (motion_factor - 0.5) * 2 * amp_y
-                new_z = base_z
-            else:  # Diagonal motion (X-Y plane)
-                new_x = base_x + (motion_factor - 0.5) * 2 * amp_x * 0.7
-                new_y = base_y + (motion_factor - 0.5) * 2 * amp_y * 0.7
-                new_z = base_z
+        # Calculate local positions (before env origin offset)
+        local_x = center_x + amp_x * torch.sin(
+            2 * math.pi * self._freq_x * t + self._phase_offsets_x
+        )
+        local_y = center_y + amp_y * torch.sin(
+            2 * math.pi * self._freq_y * t + self._phase_offsets_y
+        )
+        local_z = center_z + amp_z * torch.sin(
+            2 * math.pi * self._freq_z * t + self._phase_offsets_z
+        )
 
-            # Update position in world frame
-            local_pos = torch.tensor([new_x, new_y, new_z], device=self.device)
-            arm_positions[i, :3] = local_pos + self.scene.env_origins[i, :3]
+        local_pos = torch.stack([local_x, local_y, local_z], dim=-1)
+
+        # Apply environment origin offsets
+        arm_positions[:, :3] = local_pos + self.scene.env_origins[:, :3]
 
         # Apply new poses with fixed orientation quaternion (w, x, y, z)
         fixed_quat = torch.tensor([0.0, 0.99144, -0.0, -0.13053], device=self.device)
@@ -812,26 +786,33 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
         arm_quats = fixed_quat.unsqueeze(0).expand(self.num_envs, -1)
         self._arm.write_root_pose_to_sim(torch.cat([arm_positions, arm_quats], dim=-1))
 
-        # Calculate and set velocities for smooth physics
+        # Calculate and set velocities (derivatives of the sine waves)
         if self.cfg.arm_movement_speed > 0:
             velocities = torch.zeros((self.num_envs, 6), device=self.device)
+            # Velocity = Amplitude * 2*pi*Freq * cos(2*pi*Freq*t + phase)
+            vel_x = (
+                amp_x
+                * 2
+                * math.pi
+                * self._freq_x
+                * torch.cos(2 * math.pi * self._freq_x * t + self._phase_offsets_x)
+            )
+            vel_y = (
+                amp_y
+                * 2
+                * math.pi
+                * self._freq_y
+                * torch.cos(2 * math.pi * self._freq_y * t + self._phase_offsets_y)
+            )
+            vel_z = (
+                amp_z
+                * 2
+                * math.pi
+                * self._freq_z
+                * torch.cos(2 * math.pi * self._freq_z * t + self._phase_offsets_z)
+            )
 
-            for i in range(self.num_envs):
-                # Calculate velocity based on motion pattern and phase
-                period = 4.0
-                phase = (self._arm_motion_time[i] % period) / period
-
-                # Velocity direction changes at phase 0.5
-                direction = 1.0 if phase < 0.5 else -1.0
-
-                if self._arm_motion_pattern[i] == 0:  # X-axis
-                    velocities[i, 0] = direction * self.cfg.arm_movement_speed
-                elif self._arm_motion_pattern[i] == 1:  # Y-axis
-                    velocities[i, 1] = direction * self.cfg.arm_movement_speed
-                else:  # Diagonal
-                    velocities[i, 0] = direction * self.cfg.arm_movement_speed * 0.7
-                    velocities[i, 1] = direction * self.cfg.arm_movement_speed * 0.7
-
+            velocities[:, :3] = torch.stack([vel_x, vel_y, vel_z], dim=-1)
             self._arm.write_root_velocity_to_sim(velocities)
         else:
             self._arm.write_root_velocity_to_sim(
@@ -2030,14 +2011,12 @@ class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
 
 # Factory function for creating the environment
 def create_obj_camera_pose_tracking_env(
-    cfg: ObjCameraGrayDepthPoseTrackingDirectEnvCfg = None,
+    cfg: AGANDataCollectionEnvCfg = None,
     render_mode: str = None,
     **kwargs,
-) -> ObjCameraGrayDepthPoseTrackingDirectEnv:
+) -> AGANDataCollectionEnv:
     """Factory function to create the environment with default config if none provided."""
     if cfg is None:
-        cfg = ObjCameraGrayDepthPoseTrackingDirectEnvCfg()
+        cfg = AGANDataCollectionEnvCfg()
 
-    return ObjCameraGrayDepthPoseTrackingDirectEnv(
-        cfg, render_mode=render_mode, **kwargs
-    )
+    return AGANDataCollectionEnv(cfg, render_mode=render_mode, **kwargs)
