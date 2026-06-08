@@ -35,6 +35,8 @@ docker/.container.cfg
 **/outputs/*
 **/videos/*
 **/wandb/*
+**/rgbd_dataset_1/*
+**/rgbd_dataset_watermark_1/*
 **/.neptune/*
 docker/artifacts/
 *.tmp
