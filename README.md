@@ -22,6 +22,7 @@ This project implements vision-based reinforcement learning for the UR5 robotic 
 ## 📋 Table of Contents
 - [Installation](#installation)
 - [Training](#training)
+- [Hierarchical Waypoint RL](#hierarchical-waypoint-rl)
 - [Evaluation](#evaluation)
 - [Configuration](#configuration)
 - [Results](#results)
@@ -161,9 +162,9 @@ export WANDB_API_KEY="<your_api_key_here>"
 
 `source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/agents/PPO_skrl_camera.yaml`
 
-Set `experiment.wandb.enabled: true` and set `experiment.wandb.project` / `experiment.wandb.entity` to your project and account. You can also enable offline logging or artifact uploads there.
+Set `agent.experiment.wandb: true` and set `agent.experiment.wandb_kwargs.project` / `agent.experiment.wandb_kwargs.entity` to your project and account.
 
-Note: ensure you have network access and a WandB account (or set `WANDB_API_KEY`) before running training with WandB enabled. If you prefer not to use WandB, leave `experiment.wandb.enabled` set to `false`.
+Note: ensure you have network access and a WandB account (or set `WANDB_API_KEY`) before running training with WandB enabled. If you prefer not to use WandB, set `agent.experiment.wandb` to `false`.
 
 
 
@@ -190,7 +191,7 @@ Train the UR5 manipulator with vision-based reinforcement learning:
 
 ```bash
 python scripts/skrl/train.py \
-    --task=Isaac-UR5-HuberDirectObj-PPO \
+    --task=UR5-Depth-PPO \
     --num_envs 2 \
     --enable_cameras \
     --headless
@@ -205,7 +206,7 @@ python scripts/skrl/train.py \
 | `--enable_cameras` | Enable camera sensors for vision-based control | False |
 | `--headless` | Run without GUI rendering (faster training) | False |
 | `--seed` | Random seed for reproducibility | 42 |
-| `--max_iterations` | Maximum training iterations | 10000 |
+| `--max_iterations` | PPO update iterations; overrides the YAML trainer timesteps | Config value |
 
 ### Advanced Training Example
 
@@ -213,7 +214,7 @@ For longer training with more environments:
 
 ```bash
 python scripts/skrl/train.py \
-    --task=Isaac-UR5-HuberDirectObj-PPO \
+    --task=UR5-Depth-PPO \
     --num_envs 64 \
     --enable_cameras \
     --headless \
@@ -229,8 +230,89 @@ logs/skrl/logs/<experiment_name>/<timestamp>/
 ├── checkpoints/
 │   ├── best_agent.pt      # Best performing model
 │   └── agent_XXXX.pt      # Periodic checkpoints
-├── tensorboard/
-└── config.yaml
+├── events.out.tfevents.*  # TensorBoard event file
+└── params/
+    ├── agent.yaml
+    └── env.yaml
+```
+
+---
+
+## Hierarchical Waypoint RL
+
+The hierarchical setup is intended for smoother, more deployable behavior than direct joint-action PPO. It splits the problem into:
+
+- `UR5-Waypoint-LowLevel-PPO`: a state-only low-level waypoint tracker with 6-D joint-delta actions.
+- `UR5-Hierarchical-Depth-PPO`: a high-level gray+depth visual policy with 3-D Cartesian waypoint actions. The waypoint is executed by a damped differential IK controller inside the environment.
+
+The high-level environment does not require a trained low-level checkpoint to run. It uses DLS IK for the low-level executor, while the separate low-level PPO task gives you a learned tracker path to experiment with later.
+
+The human arm pose is not provided in the policy state; obstacle awareness must come from the gray+depth image.
+
+For a deeper explanation of how the high-level policy chooses and learns waypoints, see [HIERARCHICAL_WAYPOINT_RL.md](HIERARCHICAL_WAYPOINT_RL.md).
+
+### Train the High-Level Visual Waypoint Policy
+
+```bash
+python scripts/skrl/train.py \
+    --task=UR5-Hierarchical-Depth-PPO \
+    --num_envs 32 \
+    --enable_cameras \
+    --headless
+```
+
+For a quick smoke test:
+
+```bash
+python scripts/skrl/train.py \
+    --task=UR5-Hierarchical-Depth-PPO \
+    --num_envs 2 \
+    --enable_cameras \
+    --headless \
+    --max_iterations 1
+```
+
+### Train the Low-Level Waypoint Tracker
+
+```bash
+python scripts/skrl/train.py \
+    --task=UR5-Waypoint-LowLevel-PPO \
+    --num_envs 64 \
+    --headless
+```
+
+For a quick smoke test:
+
+```bash
+python scripts/skrl/train.py \
+    --task=UR5-Waypoint-LowLevel-PPO \
+    --num_envs 2 \
+    --headless \
+    --max_iterations 1
+```
+
+
+
+### Relevant Files
+
+- Environment: `source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/huber_obj_hierarchical_gray_depth.py`
+- Low-level PPO config: `source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/agents/PPO_skrl_waypoint_low_level.yaml`
+- High-level PPO config: `source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/agents/PPO_skrl_hierarchical_gray_depth.yaml`
+
+### Runtime Environment
+
+If `python scripts/skrl/train.py ...` fails with `ModuleNotFoundError: No module named 'isaacsim'`, activate the Isaac Lab environment and source the Isaac Sim setup script first:
+
+```bash
+conda activate env_isaaclab
+source /path/to/isaacsim/setup_conda_env.sh
+```
+
+On this workstation, the verified setup was:
+
+```bash
+conda activate isaac
+source /home/adi2440/isaacsim/setup_conda_env.sh
 ```
 
 ---
@@ -243,7 +325,7 @@ To visualize and evaluate a trained checkpoint:
 
 ```bash
 python scripts/skrl/play.py \
-    --task=Isaac-UR5-HuberDirectObj-PPO \
+    --task=UR5-Depth-PPO \
     --num_envs 2 \
     --enable_cameras \
     --checkpoint logs/skrl/logs/skrl_camera_pose_tracking/arm_avoidance_v1/checkpoints/best_agent.pt
@@ -256,8 +338,8 @@ python scripts/skrl/play.py \
 | `--checkpoint` | Path to trained model checkpoint | Required |
 | `--num_envs` | Number of parallel evaluation environments | 2 |
 | `--enable_cameras` | Enable camera rendering | False |
-| `--record_video` | Record evaluation episodes | False |
-| `--video_length` | Number of steps to record | 500 |
+| `--video` | Record evaluation episodes | False |
+| `--video_length` | Number of steps to record | 200 |
 
 ### Batch Evaluation
 
@@ -267,7 +349,7 @@ Evaluate multiple checkpoints or conditions:
 # Evaluate with different environment counts
 for n in 1 2 4 8; do
     python scripts/skrl/play.py \
-        --task=Isaac-UR5-HuberDirectObj-PPO \
+        --task=UR5-Depth-PPO \
         --num_envs $n \
         --enable_cameras \
         --checkpoint <your_checkpoint_path>
@@ -290,12 +372,12 @@ To enable WandB logging, modify the configuration:
 
 ```yaml
 # In PPO_skrl_camera.yaml
-experiment:
-  wandb:
-    enabled: true
-    project: "ur5-manipulation"
-    entity: "your-wandb-username"
-    tags: ["ur5", "vision", "ppo"]
+agent:
+  experiment:
+    wandb: true
+    wandb_kwargs:
+      project: "ur5-manipulation"
+      entity: "your-wandb-username"
 ```
 
 ### Environment Configuration
@@ -349,7 +431,7 @@ python scripts/visualize_results.py --log_dir logs/skrl/logs/<experiment_name>
 **1. CUDA Out of Memory**
 ```bash
 # Reduce number of environments
-python scripts/skrl/train.py --task=Isaac-UR5-HuberDirectObj-PPO --num_envs 1 --enable_cameras
+python scripts/skrl/train.py --task=UR5-Depth-PPO --num_envs 1 --enable_cameras
 ```
 
 **2. Camera not rendering**
@@ -360,10 +442,11 @@ python scripts/skrl/train.py --task=Isaac-UR5-HuberDirectObj-PPO --num_envs 1 --
 **3. Module not found errors**
 ```bash
 # Ensure conda environment is activated
-conda activate isaaclab
+conda activate env_isaaclab
+source /path/to/isaacsim/setup_conda_env.sh
 
 # Reinstall project dependencies
-pip install -e source/distMARL --force-reinstall
+pip install -e source/RL_UR5 --force-reinstall
 ```
 
 ### Getting Help

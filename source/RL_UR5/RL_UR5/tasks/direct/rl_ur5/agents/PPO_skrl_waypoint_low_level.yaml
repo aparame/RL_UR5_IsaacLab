@@ -1,0 +1,79 @@
+# Seed for reproducibility
+seed: 42
+
+# State-only PPO for the low-level waypoint tracker.
+models:
+  separate: True
+
+  policy:
+    class: GaussianMixin
+    clip_actions: False
+    clip_log_std: True
+    min_log_std: -20.0
+    max_log_std: 2.0
+    initial_log_std: -0.5
+    network:
+      - name: net
+        input: OBSERVATIONS["state"]
+        layers: [256, 256, 128]
+        activations: [relu, relu, relu]
+    output: ACTIONS
+
+  value:
+    class: DeterministicMixin
+    clip_actions: False
+    network:
+      - name: net
+        input: OBSERVATIONS["state"]
+        layers: [256, 256, 128]
+        activations: [relu, relu, relu]
+    output: ONE
+
+memory:
+  class: RandomMemory
+  memory_size: -1
+
+agent:
+  class: PPO
+  rollouts: 128
+  learning_epochs: 10
+  mini_batches: 16
+
+  discount_factor: 0.99
+  lambda: 0.95
+  learning_rate: 5.0e-04
+  learning_rate_scheduler: KLAdaptiveLR
+  learning_rate_scheduler_kwargs:
+    kl_threshold: 0.01
+
+  state_preprocessor: RunningStandardScaler
+  state_preprocessor_kwargs: null
+  value_preprocessor: RunningStandardScaler
+  value_preprocessor_kwargs: null
+
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 0.5
+  ratio_clip: 0.2
+  value_clip: 0.2
+  entropy_loss_scale: 0.001
+  clip_predicted_values: True
+  value_loss_scale: 1.0
+  kl_threshold: 0.01
+  rewards_shaper: 1.0
+  time_limit_bootstrap: True
+
+  experiment:
+    directory: "./logs/skrl_waypoint_low_level"
+    experiment_name: "UR5_Waypoint_LowLevel"
+    write_interval: 100
+    checkpoint_interval: 25000
+    wandb: True
+    wandb_kwargs:
+      project: "RL_UR5"
+      entity: "i2rLAB"
+
+trainer:
+  class: SequentialTrainer
+  timesteps: 500000
+  environment_info: log

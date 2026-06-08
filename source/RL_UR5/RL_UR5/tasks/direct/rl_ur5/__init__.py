@@ -55,7 +55,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.simple_pose_tracking_direct:SimpleCameraPoseTrackingEnvCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:PPO_skrl_simple.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:PPO_skrl_camera.yaml",
     },
 )
 
@@ -75,5 +75,25 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}.agan_data_collection_direct_gray_depth:AGANDataCollectionEnvCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:PPO_skrl_camera_gray_depth.yaml",
+    },
+)
+
+gym.register(
+    id="UR5-Waypoint-LowLevel-PPO",
+    entry_point=f"{__name__}.huber_obj_hierarchical_gray_depth:UR5WaypointLowLevelEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.huber_obj_hierarchical_gray_depth:UR5WaypointLowLevelEnvCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:PPO_skrl_waypoint_low_level.yaml",
+    },
+)
+
+gym.register(
+    id="UR5-Hierarchical-Depth-PPO",
+    entry_point=f"{__name__}.huber_obj_hierarchical_gray_depth:UR5HierarchicalGrayDepthEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.huber_obj_hierarchical_gray_depth:UR5HierarchicalGrayDepthEnvCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:PPO_skrl_hierarchical_gray_depth.yaml",
     },
 )

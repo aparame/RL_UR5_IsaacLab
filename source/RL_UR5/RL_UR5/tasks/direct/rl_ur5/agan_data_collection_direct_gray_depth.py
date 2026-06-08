@@ -49,6 +49,7 @@ import itertools
 
 # Robot configuration
 from .assets.ur5 import UR5_GRIPPER_CFG
+from .rollout_logger import RolloutLogger
 
 # Custom utilities - with fallback
 try:
@@ -87,9 +88,38 @@ class AGANDataCollectionEnvCfg(DirectRLEnvCfg):
     debug_vis = False  # Enable/disable debug visualization
 
     # AGAN Data Collection Switch
-    save_agan_images = True  # Set to True to save images for GAN training
+    save_agan_images = False  # Legacy PNG/JSONL export. HDF5 RGBD logging is preferred.
     agan_data_dir = "agan_dataset_run_2"
     agan_save_interval = 3  # Save every 3rd step (30Hz / 3 = 10Hz)
+
+    # Synchronized RGBD/proprio/action rollout logging for latent dynamics training.
+    save_rgbd_rollouts = False
+    rgbd_rollout_log_path = "rgbd_dataset_watermark_1"  # Empty means create an HDF5 file inside agan_data_dir.
+    rgbd_rollout_flush_interval = 100
+    rgbd_rollout_stride = agan_save_interval
+    rgbd_depth_max = 10.0
+    max_rgbd_rollout_episodes = (
+        30  # Counted across all parallel envs. Set <= 0 to disable auto-shutdown.
+    )
+
+    # Live replay attack settings. The policy receives replayed camera
+    # observations after the trigger; HDF5 logging keeps both spoofed and live RGB-D.
+    replay_attack_enabled = False
+    replay_attack_trigger_step = (
+        0  # Earliest per-episode step to search for a state-matched replay source.
+    )
+    replay_attack_delay_steps = 120
+    replay_attack_warmup_steps = 0
+    replay_attack_buffer_capacity = 4096
+    replay_attack_match_threshold = 1.0
+    replay_attack_joint_match_scale = 0.05
+    replay_attack_arm_match_scale = 0.05
+    replay_attack_print_start = True
+    replay_attack_print_max_envs = 8
+
+    # Watermark settings
+    watermark_enabled = False
+    watermark_covariance = 0.05  # Standard deviation of 0.01 matches the magnitude of joint_pos_noise bounds
 
     # Arm dimensions for BBox approximation (approximate dimensions in meters)
     arm_approx_dims = [0.2, 0.65, 0.1]  # Width, Length, Depth
@@ -335,7 +365,7 @@ class AGANDataCollectionEnvCfg(DirectRLEnvCfg):
     #     "z": (-0.4, 0.4),  # wrt base link of robot [-80mm to +320mm] irl
     # }
 
-    command_resampling_time = 6.0
+    command_resampling_time = 16.0
 
     # Human arm movement settings
     arm_position_bounds = {
@@ -343,7 +373,7 @@ class AGANDataCollectionEnvCfg(DirectRLEnvCfg):
         "y": (-0.5, 0.5),
         "z": (0.7, 1.0),
     }
-    arm_movement_speed = 0.5  # Speed of random movement
+    arm_movement_speed = 0.15  # Speed of random movement
 
     # Reward settings
     reward_distance_weight = -2.5
@@ -384,14 +414,14 @@ class AGANDataCollectionEnvCfg(DirectRLEnvCfg):
     visualization_save_path = "./visualize_camera_images"  # Path to save visualizations
 
     # Noise settings
-    joint_pos_noise_min = -0.01
-    joint_pos_noise_max = 0.01
-    joint_vel_noise_min = -0.001
-    joint_vel_noise_max = 0.001
+    joint_pos_noise_min = 0.0
+    joint_pos_noise_max = 0.0
+    joint_vel_noise_min = 0.0
+    joint_vel_noise_max = 0.0
 
     # Reset settings
     robot_base_pose = [-0.568, -0.858, 1.402, -2.185, -1.6060665, 1.64142667]
-    robot_reset_noise_range = 0.05
+    robot_reset_noise_range = 0.1
 
 
 class AGANDataCollectionEnv(DirectRLEnv):
@@ -407,6 +437,22 @@ class AGANDataCollectionEnv(DirectRLEnv):
     ):
         # Store config
         self.cfg = cfg
+        self._rollout_logger = None
+        self._rollout_episode_ids = None
+        self._next_rollout_episode_id = 0
+        self._replay_policy_image_buffer = None
+        self._replay_rgbd_buffer = None
+        self._replay_state_buffer = None
+        self._replay_episode_id_buffer = None
+        self._replay_step_id_buffer = None
+        self._replay_env_id_buffer = None
+        self._replay_buffer_write_idx = 0
+        self._replay_buffer_count = 0
+        self._replay_attack_was_active = None
+        self._rgbd_rollout_completed_episodes = 0
+        self._rgbd_rollout_completed_attacked_episodes = 0
+        self._rgbd_rollout_waiting_for_attacks_printed = False
+        self._rgbd_rollout_shutdown_requested = False
 
         # === episode / logging bookkeeping ===
         self._episode_counter = 0
@@ -447,6 +493,45 @@ class AGANDataCollectionEnv(DirectRLEnv):
         )
         self._target_poses = torch.zeros((self.num_envs, 7), device=self.device)
         self._command_time_left = torch.zeros(self.num_envs, device=self.device)
+        self.raw_actions = torch.zeros_like(self._robot_dof_targets)
+        self.actions = torch.zeros_like(self._robot_dof_targets)
+        self.base_actions = torch.zeros_like(self._robot_dof_targets)
+        self.sampled_watermarks = torch.zeros_like(self._robot_dof_targets)
+        self.effective_action_deltas = torch.zeros_like(self._robot_dof_targets)
+        self._rollout_episode_ids = torch.arange(
+            self.num_envs, device=self.device, dtype=torch.int64
+        )
+        self._next_rollout_episode_id = int(self.num_envs)
+        self._latest_attack_active = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self._latest_attack_trigger = torch.zeros_like(self._latest_attack_active)
+        self._latest_attack_source_episode_index = torch.full(
+            (self.num_envs,), -1, device=self.device, dtype=torch.int64
+        )
+        self._latest_attack_source_step_index = torch.full_like(
+            self._latest_attack_source_episode_index, -1
+        )
+        self._latest_attack_source_env_id = torch.full_like(
+            self._latest_attack_source_episode_index, -1
+        )
+        self._latest_attack_match_distance = torch.full(
+            (self.num_envs,), float("inf"), device=self.device, dtype=torch.float32
+        )
+        self._replay_attack_was_active = torch.zeros_like(self._latest_attack_active)
+        self._replay_attack_source_env_ids = torch.full(
+            (self.num_envs,), -1, device=self.device, dtype=torch.int64
+        )
+        self._replay_attack_source_start_slots = torch.full_like(
+            self._replay_attack_source_env_ids, -1
+        )
+        self._replay_attack_start_steps = torch.full_like(
+            self._replay_attack_source_env_ids, -1
+        )
+        self._replay_attack_match_distances = torch.full(
+            (self.num_envs,), float("inf"), device=self.device, dtype=torch.float32
+        )
+        self._init_replay_attack_buffers()
 
         # Arm movement state
         self._arm_target_pos = torch.zeros((self.num_envs, 3), device=self.device)
@@ -475,6 +560,66 @@ class AGANDataCollectionEnv(DirectRLEnv):
             * float("inf"),
         }
 
+        if self.cfg.save_rgbd_rollouts:
+            rollout_path = self.cfg.rgbd_rollout_log_path or self.cfg.agan_data_dir
+            rollout_run_prefix = "rgbd_proprio_actions"
+            if self.cfg.replay_attack_enabled:
+                rollout_run_prefix = f"{rollout_run_prefix}_replay_attacked"
+                path_root, path_ext = os.path.splitext(str(rollout_path))
+                if path_ext.lower() in {
+                    ".h5",
+                    ".hdf5",
+                } and "replay_attacked" not in os.path.basename(path_root):
+                    rollout_path = f"{path_root}_replay_attacked{path_ext}"
+            self._rollout_logger = RolloutLogger(
+                path=rollout_path,
+                run_prefix=rollout_run_prefix,
+                flush_interval=self.cfg.rgbd_rollout_flush_interval,
+                metadata={
+                    "task": "agan_rgbd_data_collection",
+                    "num_envs": int(self.num_envs),
+                    "state_dim": int(self.cfg.state_dim),
+                    "action_dim": int(self.cfg.action_space.shape[0]),
+                    "rgbd_channels": 4,
+                    "proprio_dim": 19,
+                    "camera_target_height": int(self.cfg.camera_target_height),
+                    "camera_target_width": int(self.cfg.camera_target_width),
+                    "rgbd_depth_units": "normalized_clipped_depth",
+                    "rgbd_depth_max_m": float(self.cfg.rgbd_depth_max),
+                    "max_rgbd_rollout_episodes": int(
+                        self.cfg.max_rgbd_rollout_episodes
+                    ),
+                    "watermark_enabled": bool(self.cfg.watermark_enabled),
+                    "watermark_covariance": float(self.cfg.watermark_covariance),
+                    "replay_attack_enabled": bool(self.cfg.replay_attack_enabled),
+                    "replay_attack_trigger_step": int(
+                        self.cfg.replay_attack_trigger_step
+                    ),
+                    "replay_attack_delay_steps": int(
+                        self.cfg.replay_attack_delay_steps
+                    ),
+                    "replay_attack_warmup_steps": int(
+                        self.cfg.replay_attack_warmup_steps
+                    ),
+                    "replay_attack_buffer_capacity": int(
+                        self.cfg.replay_attack_buffer_capacity
+                    ),
+                    "replay_attack_match_threshold": float(
+                        self.cfg.replay_attack_match_threshold
+                    ),
+                    "replay_attack_joint_match_scale": float(
+                        self.cfg.replay_attack_joint_match_scale
+                    ),
+                    "replay_attack_arm_match_scale": float(
+                        self.cfg.replay_attack_arm_match_scale
+                    ),
+                    "replay_attack_print_start": bool(
+                        self.cfg.replay_attack_print_start
+                    ),
+                },
+            )
+            print(f"[INFO] RGBD rollout logging enabled: {self._rollout_logger.path}")
+
         # Log initial information
         print(f"[INFO] Environment initialized with {self.num_envs} environments")
         print(f"[INFO] Action scale: {self.cfg.action_scale}")
@@ -497,6 +642,13 @@ class AGANDataCollectionEnv(DirectRLEnv):
 
     def close(self):
         """Cleanup for the environment."""
+        if self._rollout_logger is not None:
+            self._rollout_logger.close()
+            self._rollout_logger = None
+        if self._state_obs_file is not None:
+            self._state_obs_file.close()
+            self._state_obs_file = None
+        self._cleanup_joint_targets_file()
         super().close()
 
     def _setup_scene(self):
@@ -599,13 +751,26 @@ class AGANDataCollectionEnv(DirectRLEnv):
             self.previous_actions = torch.zeros_like(actions)
 
         # Store raw actions
-        self.actions = actions.clone().clamp(-1.0, 1.0)
+        self.raw_actions = actions.clone().clamp(-1.0, 1.0)
 
         # Action filter removed for direct control
         # filtered_actions = self._apply_action_filter(self.actions)
 
         # Scale actions
-        self.actions = self.actions * self.cfg.action_scale
+        self.base_actions = self.raw_actions * self.cfg.action_scale
+
+        if self.cfg.watermark_enabled:
+            # Sample additive Gaussian watermark
+            std = self.cfg.watermark_covariance
+            self.sampled_watermarks = torch.randn_like(self.base_actions) * std
+
+            # Apply watermark to the scaled actions
+            self.actions = self.base_actions + self.sampled_watermarks
+            self.effective_action_deltas = self.actions - self.base_actions
+        else:
+            self.actions = self.base_actions.clone()
+            self.sampled_watermarks.zero_()
+            self.effective_action_deltas.zero_()
 
         # Update command timer
         self._command_time_left -= self.physics_dt
@@ -826,6 +991,7 @@ class AGANDataCollectionEnv(DirectRLEnv):
 
         # Get camera observations
         camera_obs = self._get_camera_observations()
+        self._log_rgbd_rollout_batch(state_obs)
 
         obs = {"image": camera_obs, "state": state_obs}
         observations = {"policy": obs}
@@ -924,62 +1090,6 @@ class AGANDataCollectionEnv(DirectRLEnv):
             print(f"[VIS] Saved camera observation to: {filename}")
 
         self._vis_counter += 1
-
-    def _get_camera_observations(self) -> torch.Tensor:
-        """Get and preprocess camera observations."""
-        # 1. Get Grayscale Data (from RGB)
-        rgb_data = self._tiled_camera_gray.data.output["rgb"] / 255.0  # (N, H, W, 3)
-        # Convert to grayscale by averaging channels
-        gray_data = torch.mean(rgb_data, dim=-1, keepdim=True)  # (N, H, W, 1)
-
-        # 2. Get Depth Data
-        depth_data = self._tiled_camera_depth.data.output[
-            "distance_to_image_plane"
-        ]  # (N, H, W, 1)
-
-        # --- Fix for depth stability ---
-        # Replace infinity/nan with max range (e.g. 3.0m)
-        max_depth = 3.0
-        depth_data = torch.nan_to_num(
-            depth_data, nan=max_depth, posinf=max_depth, neginf=0.0
-        )
-        depth_data = torch.clamp(depth_data, 0.0, max_depth)
-
-        # Normalize depth to [0, 1] range (consistent with gray)
-        depth_data = depth_data / max_depth
-
-        # 3. Concatenate
-        combined_data = torch.cat([gray_data, depth_data], dim=-1)  # (N, H, W, 2)
-
-        # Store raw RGB for visualization (optional)
-        raw_camera_data = rgb_data.clone()
-
-        # 4. Mean subtraction (Center the data)
-        mean_tensor = torch.mean(combined_data, dim=(1, 2), keepdim=True)
-        combined_data = combined_data - mean_tensor
-
-        # 5. Crop image (top and bottom)
-        cropped = combined_data[
-            :, self.cfg.camera_crop_top : -self.cfg.camera_crop_bottom, :, :
-        ]
-
-        # 6. Resize
-        # Convert to NCHW for interpolation
-        cropped = cropped.permute(0, 3, 1, 2)  # (N, 2, H, W)
-
-        # Resize using torch interpolation
-        resized = torch.nn.functional.interpolate(
-            cropped,
-            size=(self.cfg.camera_target_height, self.cfg.camera_target_width),
-            mode="bilinear",
-            align_corners=False,
-        )
-
-        # Visualize camera observation periodically
-        if self.common_step_counter % self.cfg.visualize_camera_interval == 0:
-            self._visualize_camera_observation(raw_camera_data, resized, env_id=0)
-
-        return resized
 
     def _huber_loss(self, x: torch.Tensor, delta: float) -> torch.Tensor:
         """Compute Huber loss for robust distance penalty."""
@@ -1487,10 +1597,31 @@ class AGANDataCollectionEnv(DirectRLEnv):
             )
         joint_vel = torch.zeros_like(joint_pos)
 
+        completed_attacked_episodes = 0
+        if (
+            self.cfg.replay_attack_enabled
+            and self._replay_attack_was_active is not None
+        ):
+            completed_attacked_episodes = int(
+                torch.count_nonzero(self._replay_attack_was_active[env_ids]).item()
+            )
+
         # Set joint state
         self._robot.write_joint_state_to_sim(
             joint_pos, joint_vel, joint_ids=self._joint_indices, env_ids=env_ids
         )
+        self._robot_dof_targets[env_ids] = joint_pos
+        self.raw_actions[env_ids] = 0.0
+        self.actions[env_ids] = 0.0
+        self.base_actions[env_ids] = 0.0
+        self.sampled_watermarks[env_ids] = 0.0
+        self.effective_action_deltas[env_ids] = 0.0
+        if self._replay_attack_was_active is not None:
+            self._replay_attack_was_active[env_ids] = False
+        self._replay_attack_source_env_ids[env_ids] = -1
+        self._replay_attack_source_start_slots[env_ids] = -1
+        self._replay_attack_start_steps[env_ids] = -1
+        self._replay_attack_match_distances[env_ids] = float("inf")
 
         # Reset arm position and orientation targets
         for i, env_id in enumerate(env_ids):
@@ -1550,6 +1681,97 @@ class AGANDataCollectionEnv(DirectRLEnv):
         # Reset timers
         self._command_time_left[env_ids] = self.cfg.command_resampling_time
 
+        if self._rollout_episode_ids is not None:
+            episode_ids = torch.arange(
+                self._next_rollout_episode_id,
+                self._next_rollout_episode_id + num_resets,
+                device=self.device,
+                dtype=torch.int64,
+            )
+            self._rollout_episode_ids[env_ids] = episode_ids
+            self._next_rollout_episode_id += num_resets
+
+        self._record_completed_rgbd_rollout_episodes(
+            num_resets, completed_attacked_episodes
+        )
+
+    def _record_completed_rgbd_rollout_episodes(
+        self, num_completed: int, num_attacked_completed: int
+    ) -> None:
+        """Stop collection after the configured number of completed episodes."""
+        if not self.cfg.save_rgbd_rollouts or self._rollout_logger is None:
+            return
+        if self._rgbd_rollout_shutdown_requested:
+            return
+
+        max_episodes = int(self.cfg.max_rgbd_rollout_episodes)
+        if max_episodes <= 0:
+            return
+
+        self._rgbd_rollout_completed_episodes += int(num_completed)
+        self._rgbd_rollout_completed_attacked_episodes += int(num_attacked_completed)
+
+        if self.cfg.replay_attack_enabled:
+            completed_for_limit = self._rgbd_rollout_completed_attacked_episodes
+            if (
+                completed_for_limit == 0
+                and self._rgbd_rollout_completed_episodes >= max_episodes
+                and not self._rgbd_rollout_waiting_for_attacks_printed
+            ):
+                self._rgbd_rollout_waiting_for_attacks_printed = True
+                print(
+                    "[INFO] RGBD replay collection has completed "
+                    f"{self._rgbd_rollout_completed_episodes} source episodes, "
+                    "but no replay-attacked episode has finished yet. "
+                    "Continuing until matched replay attacks are collected."
+                )
+        else:
+            completed_for_limit = self._rgbd_rollout_completed_episodes
+
+        if completed_for_limit < max_episodes:
+            return
+
+        self._request_rgbd_rollout_shutdown(max_episodes, completed_for_limit)
+
+    def _request_rgbd_rollout_shutdown(
+        self, max_episodes: int, completed_for_limit: int
+    ) -> None:
+        """Flush rollout data and request a clean Isaac Lab app shutdown."""
+        self._rgbd_rollout_shutdown_requested = True
+        episode_kind = (
+            "replay-attacked episodes" if self.cfg.replay_attack_enabled else "episodes"
+        )
+        print(
+            "[INFO] RGBD rollout episode limit reached: "
+            f"{int(completed_for_limit)}/{int(max_episodes)} completed "
+            f"{episode_kind} across all parallel environments "
+            f"({self._rgbd_rollout_completed_episodes} total episodes). "
+            "Flushing rollout data and shutting down Isaac Lab."
+        )
+
+        if self._rollout_logger is not None:
+            self._rollout_logger.close()
+            self._rollout_logger = None
+
+        try:
+            app = None
+            import omni.kit.app
+
+            app = omni.kit.app.get_app()
+            if app is not None:
+                app.post_quit()
+        except Exception as exc:
+            print(f"[WARN] Could not request Isaac Kit app quit: {exc}")
+
+        sim = getattr(self, "sim", None)
+        if sim is not None and hasattr(sim, "stop"):
+            try:
+                sim.stop()
+            except Exception as exc:
+                print(f"[WARN] Could not stop simulation context: {exc}")
+
+        raise SystemExit(0)
+
     def _sample_target_poses_for_reset(self, env_ids: Sequence[int]):
         """Sample new target poses for reset environments."""
         num_resets = len(env_ids)
@@ -1590,6 +1812,387 @@ class AGANDataCollectionEnv(DirectRLEnv):
         # Update buffers
         self._target_poses[env_ids, :3] = torch.stack([x, y, z], dim=-1)
         self._target_poses[env_ids, 3:7] = target_quat
+
+    def _init_replay_attack_buffers(self) -> None:
+        """Allocate replay source buffers when live replay attacks are enabled."""
+        if not self.cfg.replay_attack_enabled:
+            return
+
+        capacity = int(self.cfg.replay_attack_buffer_capacity)
+        if capacity <= 0:
+            raise ValueError("replay_attack_buffer_capacity must be positive")
+
+        height = int(self.cfg.camera_target_height)
+        width = int(self.cfg.camera_target_width)
+        self._replay_policy_image_buffer = torch.zeros(
+            (self.num_envs, capacity, 2, height, width),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        self._replay_rgbd_buffer = torch.zeros(
+            (self.num_envs, capacity, 4, height, width),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        self._replay_state_buffer = torch.zeros(
+            (self.num_envs, capacity, 9), device=self.device, dtype=torch.float32
+        )
+        self._replay_episode_id_buffer = torch.full(
+            (self.num_envs, capacity), -1, device=self.device, dtype=torch.int64
+        )
+        self._replay_step_id_buffer = torch.full_like(
+            self._replay_episode_id_buffer, -1
+        )
+        self._replay_env_id_buffer = (
+            torch.arange(self.num_envs, device=self.device, dtype=torch.int64)
+            .unsqueeze(1)
+            .repeat(1, capacity)
+        )
+        self._replay_buffer_write_idx = 0
+        self._replay_buffer_count = 0
+
+    def _get_replay_match_states(self) -> torch.Tensor:
+        """Return robot joint positions plus env-relative human arm position."""
+        joint_pos = self._robot.data.joint_pos[:, self._joint_indices]
+        arm_pos = self._arm.data.root_pos_w[:, :3] - self.scene.env_origins[:, :3]
+        return torch.cat([joint_pos, arm_pos], dim=-1).detach()
+
+    def _apply_replay_attack(
+        self, policy_images: torch.Tensor, rgbd_images: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return policy/RGB-D observations after optional live replay spoofing."""
+        self._latest_true_rgbd_obs = rgbd_images.detach()
+
+        self._latest_attack_active.zero_()
+        self._latest_attack_trigger.zero_()
+        self._latest_attack_source_episode_index.fill_(-1)
+        self._latest_attack_source_step_index.fill_(-1)
+        self._latest_attack_source_env_id.fill_(-1)
+        self._latest_attack_match_distance.fill_(float("inf"))
+
+        if not self.cfg.replay_attack_enabled:
+            self._latest_rgbd_obs = rgbd_images.detach()
+            return policy_images, rgbd_images
+
+        if self._replay_policy_image_buffer is None:
+            self._init_replay_attack_buffers()
+
+        capacity = int(self.cfg.replay_attack_buffer_capacity)
+        current_states = self._get_replay_match_states()
+        can_replay = (
+            self._replay_buffer_count >= capacity
+            and self.common_step_counter >= int(self.cfg.replay_attack_warmup_steps)
+        )
+        local_step_ids = self.episode_length_buf.to(torch.int64)
+        eligible_envs = (
+            local_step_ids >= int(self.cfg.replay_attack_trigger_step)
+        ) & bool(can_replay)
+
+        newly_matched_env_ids = torch.nonzero(
+            eligible_envs & ~self._replay_attack_was_active, as_tuple=False
+        ).squeeze(-1)
+        if newly_matched_env_ids.numel() > 0:
+            self._select_replay_attack_sources(
+                newly_matched_env_ids, current_states[newly_matched_env_ids]
+            )
+
+        has_source = self._replay_attack_source_env_ids >= 0
+        attack_active = eligible_envs & has_source
+
+        attacked_policy_images = policy_images
+        attacked_rgbd_images = rgbd_images
+        if torch.any(attack_active):
+            active_env_ids = torch.nonzero(attack_active, as_tuple=False).squeeze(-1)
+            source_env_ids = self._replay_attack_source_env_ids[active_env_ids]
+            attack_offsets = (
+                local_step_ids[active_env_ids]
+                - self._replay_attack_start_steps[active_env_ids]
+            )
+            source_slots = (
+                self._replay_attack_source_start_slots[active_env_ids] + attack_offsets
+            ) % capacity
+
+            attacked_policy_images = policy_images.clone()
+            attacked_rgbd_images = rgbd_images.clone()
+            attacked_policy_images[active_env_ids] = self._replay_policy_image_buffer[
+                source_env_ids, source_slots
+            ]
+            attacked_rgbd_images[active_env_ids] = self._replay_rgbd_buffer[
+                source_env_ids, source_slots
+            ]
+            self._latest_attack_source_episode_index[active_env_ids] = (
+                self._replay_episode_id_buffer[source_env_ids, source_slots]
+            )
+            self._latest_attack_source_step_index[active_env_ids] = (
+                self._replay_step_id_buffer[source_env_ids, source_slots]
+            )
+            self._latest_attack_source_env_id[active_env_ids] = (
+                self._replay_env_id_buffer[source_env_ids, source_slots]
+            )
+            self._latest_attack_match_distance[active_env_ids] = (
+                self._replay_attack_match_distances[active_env_ids]
+            )
+
+        self._latest_attack_active = attack_active
+        self._latest_attack_trigger = attack_active & ~self._replay_attack_was_active
+        self._replay_attack_was_active = attack_active.clone()
+        self._latest_rgbd_obs = attacked_rgbd_images.detach()
+        if self.cfg.replay_attack_print_start and torch.any(
+            self._latest_attack_trigger
+        ):
+            self._print_replay_attack_start_indicator()
+
+        self._append_replay_attack_buffer(policy_images, rgbd_images)
+        return attacked_policy_images, attacked_rgbd_images
+
+    def _select_replay_attack_sources(
+        self, env_ids: torch.Tensor, current_states: torch.Tensor
+    ) -> None:
+        """Choose closest buffered source frames across all parallel environments."""
+        if self._replay_state_buffer is None or env_ids.numel() == 0:
+            return
+
+        source_states = self._replay_state_buffer.reshape(-1, 9)
+        source_episode_ids = self._replay_episode_id_buffer.reshape(-1)
+        source_step_ids = self._replay_step_id_buffer.reshape(-1)
+        source_env_ids = self._replay_env_id_buffer.reshape(-1)
+        source_slots = (
+            torch.arange(
+                int(self.cfg.replay_attack_buffer_capacity),
+                device=self.device,
+                dtype=torch.int64,
+            )
+            .unsqueeze(0)
+            .repeat(self.num_envs, 1)
+            .reshape(-1)
+        )
+
+        scales = torch.tensor(
+            [float(self.cfg.replay_attack_joint_match_scale)] * 6
+            + [float(self.cfg.replay_attack_arm_match_scale)] * 3,
+            device=self.device,
+            dtype=torch.float32,
+        ).clamp_min(1e-6)
+        threshold = float(self.cfg.replay_attack_match_threshold)
+
+        for row, env_id in enumerate(env_ids):
+            current_state = current_states[row]
+            deltas = (source_states - current_state.unsqueeze(0)) / scales
+            distances = torch.linalg.norm(deltas, dim=-1) / math.sqrt(
+                float(source_states.shape[-1])
+            )
+
+            # Avoid starting from the same episode, which can produce a trivial
+            # replay of the current run instead of a stored source trajectory.
+            current_episode_id = self._rollout_episode_ids[env_id]
+            distances = torch.where(
+                source_episode_ids == current_episode_id,
+                torch.full_like(distances, float("inf")),
+                distances,
+            )
+            remaining_episode_steps = int(
+                max(
+                    1,
+                    int(self.max_episode_length)
+                    - int(self.episode_length_buf[env_id].item()),
+                )
+            )
+            available_future_steps = (
+                int(self._replay_buffer_write_idx) - source_slots - 1
+            ) % int(self.cfg.replay_attack_buffer_capacity)
+            has_future_buffer = available_future_steps >= (remaining_episode_steps - 1)
+            has_future_episode = (source_step_ids + remaining_episode_steps) <= int(
+                self.max_episode_length
+            )
+            distances = torch.where(
+                has_future_buffer & has_future_episode,
+                distances,
+                torch.full_like(distances, float("inf")),
+            )
+
+            best_distance, best_index = torch.min(distances, dim=0)
+            if not torch.isfinite(best_distance) or best_distance > threshold:
+                continue
+
+            self._replay_attack_source_env_ids[env_id] = source_env_ids[best_index]
+            self._replay_attack_source_start_slots[env_id] = source_slots[best_index]
+            self._replay_attack_start_steps[env_id] = self.episode_length_buf[env_id]
+            self._replay_attack_match_distances[env_id] = best_distance
+
+    def _print_replay_attack_start_indicator(self) -> None:
+        """Print one terminal line for each env whose replay attack just started."""
+        trigger_env_ids = torch.nonzero(
+            self._latest_attack_trigger, as_tuple=False
+        ).squeeze(-1)
+        max_envs = max(1, int(self.cfg.replay_attack_print_max_envs))
+        shown_env_ids = trigger_env_ids[:max_envs]
+
+        env_ids = shown_env_ids.detach().cpu().tolist()
+        episode_ids = self._rollout_episode_ids[shown_env_ids].detach().cpu().tolist()
+        episode_steps = self.episode_length_buf[shown_env_ids].detach().cpu().tolist()
+        source_env_ids = (
+            self._latest_attack_source_env_id[shown_env_ids].detach().cpu().tolist()
+        )
+        source_episode_ids = (
+            self._latest_attack_source_episode_index[shown_env_ids]
+            .detach()
+            .cpu()
+            .tolist()
+        )
+        source_step_ids = (
+            self._latest_attack_source_step_index[shown_env_ids].detach().cpu().tolist()
+        )
+        match_distances = (
+            self._latest_attack_match_distance[shown_env_ids].detach().cpu().tolist()
+        )
+
+        for (
+            env_id,
+            episode_id,
+            episode_step,
+            source_env_id,
+            source_episode_id,
+            source_step_id,
+            match_distance,
+        ) in zip(
+            env_ids,
+            episode_ids,
+            episode_steps,
+            source_env_ids,
+            source_episode_ids,
+            source_step_ids,
+            match_distances,
+        ):
+            print(
+                "[REPLAY ATTACK START] "
+                f"global_step={int(self.common_step_counter)} | "
+                f"env={int(env_id)} | "
+                f"episode_id={int(episode_id)} | "
+                f"episode_step={int(episode_step)} | "
+                f"source_env={int(source_env_id)} | "
+                f"source_episode_id={int(source_episode_id)} | "
+                f"source_step={int(source_step_id)} | "
+                f"match_distance={float(match_distance):.4f}"
+            )
+
+        omitted = int(trigger_env_ids.numel()) - len(env_ids)
+        if omitted > 0:
+            print(
+                "[REPLAY ATTACK START] "
+                f"{omitted} additional envs triggered at "
+                f"global_step={int(self.common_step_counter)}"
+            )
+
+    def _append_replay_attack_buffer(
+        self, policy_images: torch.Tensor, rgbd_images: torch.Tensor
+    ) -> None:
+        """Store live camera observations as future replay-attack sources."""
+        if self._replay_policy_image_buffer is None:
+            return
+
+        slot = self._replay_buffer_write_idx
+        self._replay_policy_image_buffer[:, slot] = policy_images.detach()
+        self._replay_rgbd_buffer[:, slot] = rgbd_images.detach()
+        self._replay_state_buffer[:, slot] = self._get_replay_match_states()
+        self._replay_episode_id_buffer[:, slot] = self._rollout_episode_ids
+        self._replay_step_id_buffer[:, slot] = self.episode_length_buf.to(torch.int64)
+        self._replay_buffer_write_idx = (slot + 1) % int(
+            self.cfg.replay_attack_buffer_capacity
+        )
+        self._replay_buffer_count = min(
+            self._replay_buffer_count + 1, int(self.cfg.replay_attack_buffer_capacity)
+        )
+
+    def _log_rgbd_rollout_batch(self, state_obs: torch.Tensor) -> None:
+        """Append synchronized image, proprioception, and action samples to HDF5."""
+        if self._rollout_logger is None:
+            return
+        if self.common_step_counter % max(1, int(self.cfg.rgbd_rollout_stride)) != 0:
+            return
+        if not hasattr(self, "_latest_rgbd_obs"):
+            return
+
+        joint_pos = self._robot.data.joint_pos[:, self._joint_indices]
+        joint_vel = self._robot.data.joint_vel[:, self._joint_indices]
+        robot_pos = self._robot.data.root_state_w[:, :3]
+        robot_quat = self._robot.data.root_state_w[:, 3:7]
+        ee_pos_w = self._ee_frame.data.target_pos_w[..., 0, :]
+        ee_quat_w = self._ee_frame.data.target_quat_w[..., 0, :]
+        ee_pos_b, ee_quat_b = math_utils.subtract_frame_transforms(
+            robot_pos, robot_quat, ee_pos_w, ee_quat_w
+        )
+        ee_pose = torch.cat([ee_pos_b, ee_quat_b], dim=-1)
+        proprio_obs = torch.cat([joint_pos, joint_vel, ee_pose], dim=-1)
+        arm_pose = torch.cat(
+            [self._arm.data.root_pos_w[:, :3], self._arm.data.root_quat_w], dim=-1
+        )
+
+        rollout_batch = dict(
+            rgbd_images=self._latest_rgbd_obs.detach().cpu().numpy().astype(np.float32),
+            states=state_obs.detach().cpu().numpy().astype(np.float32),
+            proprio_observations=proprio_obs.detach().cpu().numpy().astype(np.float32),
+            raw_actions=self.raw_actions.detach().cpu().numpy().astype(np.float32),
+            base_actions=self.base_actions.detach().cpu().numpy().astype(np.float32),
+            scaled_actions=self.actions.detach().cpu().numpy().astype(np.float32),
+            sampled_watermarks=self.sampled_watermarks.detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32),
+            effective_action_deltas=self.effective_action_deltas.detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32),
+            joint_positions=joint_pos.detach().cpu().numpy().astype(np.float32),
+            joint_velocities=joint_vel.detach().cpu().numpy().astype(np.float32),
+            joint_targets=self._robot_dof_targets.detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32),
+            ee_poses=ee_pose.detach().cpu().numpy().astype(np.float32),
+            target_poses=self._target_poses.detach().cpu().numpy().astype(np.float32),
+            arm_poses=arm_pose.detach().cpu().numpy().astype(np.float32),
+            episode_ids=self._rollout_episode_ids.detach()
+            .cpu()
+            .numpy()
+            .astype(np.int64),
+            step_ids=self.episode_length_buf.detach().cpu().numpy().astype(np.int64),
+            global_step_ids=np.full(
+                self.num_envs, self.common_step_counter, dtype=np.int64
+            ),
+            env_ids=np.arange(self.num_envs, dtype=np.int64),
+        )
+        if self.cfg.replay_attack_enabled:
+            rollout_batch.update(
+                true_rgbd_images=self._latest_true_rgbd_obs.detach()
+                .cpu()
+                .numpy()
+                .astype(np.float32),
+                attack_active=self._latest_attack_active.detach()
+                .cpu()
+                .numpy()
+                .astype(np.bool_),
+                attack_trigger=self._latest_attack_trigger.detach()
+                .cpu()
+                .numpy()
+                .astype(np.bool_),
+                attack_source_episode_index=self._latest_attack_source_episode_index.detach()
+                .cpu()
+                .numpy()
+                .astype(np.int64),
+                attack_source_step_index=self._latest_attack_source_step_index.detach()
+                .cpu()
+                .numpy()
+                .astype(np.int64),
+                attack_source_env_id=self._latest_attack_source_env_id.detach()
+                .cpu()
+                .numpy()
+                .astype(np.int64),
+                attack_match_distance=self._latest_attack_match_distance.detach()
+                .cpu()
+                .numpy()
+                .astype(np.float32),
+            )
+        self._rollout_logger.append_batch(**rollout_batch)
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         # Create markers for visualizing the goal poses
@@ -1715,7 +2318,9 @@ class AGANDataCollectionEnv(DirectRLEnv):
     def _get_camera_observations(self) -> torch.Tensor:
         """Get and preprocess camera observations."""
         # 1. Get Grayscale Data (from RGB)
-        rgb_data = self._tiled_camera_gray.data.output["rgb"] / 255.0  # (N, H, W, 3)
+        rgb_data = (
+            self._tiled_camera_gray.data.output["rgb"][..., :3] / 255.0
+        )  # (N, H, W, 3)
         # Convert to grayscale by averaging channels
         gray_data = torch.mean(rgb_data, dim=-1, keepdim=True)  # (N, H, W, 1)
 
@@ -1726,8 +2331,10 @@ class AGANDataCollectionEnv(DirectRLEnv):
 
         # --- Fix for depth stability ---
         # Replace infinity/nan with max range (e.g. 10.0m)
-        max_depth = 10.0
-        depth_data = torch.nan_to_num(depth_data, posinf=max_depth, neginf=0.0)
+        max_depth = float(self.cfg.rgbd_depth_max)
+        depth_data = torch.nan_to_num(
+            depth_data, nan=max_depth, posinf=max_depth, neginf=0.0
+        )
         depth_data = torch.clamp(depth_data, 0.0, max_depth)
 
         # Normalize depth to [0, 1] range roughly to match grayscale intensity distribution
@@ -1735,6 +2342,7 @@ class AGANDataCollectionEnv(DirectRLEnv):
 
         # 3. Concatenate
         combined_data = torch.cat([gray_data, depth_data], dim=-1)  # (N, H, W, 2)
+        rgbd_data = torch.cat([rgb_data, depth_data], dim=-1)  # (N, H, W, 4)
 
         # Store raw RGB for visualization (optional)
         raw_camera_data = rgb_data.clone()
@@ -1759,6 +2367,18 @@ class AGANDataCollectionEnv(DirectRLEnv):
             mode="bilinear",
             align_corners=False,
         )
+
+        rgbd_cropped = rgbd_data[
+            :, self.cfg.camera_crop_top : -self.cfg.camera_crop_bottom, :, :
+        ].permute(0, 3, 1, 2)
+        rgbd_resized = torch.nn.functional.interpolate(
+            rgbd_cropped,
+            size=(self.cfg.camera_target_height, self.cfg.camera_target_width),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        resized, _ = self._apply_replay_attack(resized, rgbd_resized)
 
         # Visualize camera observation periodically
         if self.common_step_counter % self.cfg.visualize_camera_interval == 0:

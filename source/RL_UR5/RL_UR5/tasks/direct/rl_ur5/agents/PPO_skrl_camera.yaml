@@ -107,7 +107,7 @@ agent:
   grad_norm_clip: 1.0
   ratio_clip: 0.2
   value_clip: 0.2
-  entropy_loss_scale: 0.01 # Higher for exploration with visual input
+  entropy_loss_scale: 0.001 # Higher for exploration with visual input
   clip_predicted_values: True
   value_loss_scale: 1.0
   kl_threshold: 0.01

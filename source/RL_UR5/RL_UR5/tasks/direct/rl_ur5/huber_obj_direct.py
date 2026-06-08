@@ -45,6 +45,7 @@ import os
 
 # Robot configuration
 from .assets.ur5 import UR5_GRIPPER_CFG
+from .rollout_logger import RolloutLogger
 
 # Custom utilities - with fallback
 try:
@@ -52,10 +53,6 @@ try:
 except ImportError:
     # Define minimal thresholds if file not found
     TABLE_HEIGHT = 0.72
-    CUBE_HEIGHT = 0.0382
-    CUBE_WIDTH = 0.0286
-    CUBE_LENGTH = 0.0635
-    CUBE_START_HEIGHT = TABLE_HEIGHT + (CUBE_HEIGHT / 2)
     PLACEMENT_POS_THRESHOLD = 0.05
     GRIPPER_OPEN_THRESHOLD = 5.0
     GRIPPER_CLOSED_THRESHOLD = 25.0
@@ -80,7 +77,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     """Configuration for the direct RL environment."""
 
     # Visualization settings - MOVED TO TOP to fix reference issue
-    debug_vis = False  # Enable/disable debug visualization
+    debug_vis = True  # Enable/disable debug visualization
 
     marker_cfg = FRAME_MARKER_CFG.copy()
     marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
@@ -124,7 +121,8 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(1.0, 0.0, 0.9), rot=(0.70711, 0.0, 0.70711, 0.0)
+            pos=(1.0, 0.0, 0.9),
+            rot=(0.9, 0.0, 0.484, 0.0),
         ),
     )
 
@@ -161,7 +159,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.151, -0.2, 0.93), rot=(0.50000, 0.50000, 0.50000, 0.50000)
+            pos=(0.16, -0.2, 0.93), rot=(0.50000, 0.50000, 0.50000, 0.50000)
         ),
     )
 
@@ -178,7 +176,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.151, 0.2, 0.93), rot=(0.50000, 0.50000, 0.50000, 0.50000)
+            pos=(0.16, 0.2, 0.93), rot=(0.50000, 0.50000, 0.50000, 0.50000)
         ),
     )
 
@@ -217,7 +215,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
         height=480,  # Matches ZED2 exactly
         # Keep your existing camera pose
         offset=TiledCameraCfg.OffsetCfg(
-            pos=(1.27, -0.06, 1.143),  # Unchanged
+            pos=(1.5, 0.0, 1.143),  # Unchanged
             rot=(0.59637, 0.37993, 0.37993, 0.59637),  # Unchanged
             convention="opengl",  # Unchanged
         ),
@@ -226,10 +224,10 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Basic environment settings
     episode_length_s = 6.0
     decimation = 4
-    action_scale = 0.3  # Reduced for smoother movements
+    action_scale = 0.3  # Kept for backward compatibility; unused for absolute actions
     state_dim = 13
-    camera_target_height = 100
-    camera_target_width = 120
+    camera_target_height = 224
+    camera_target_width = 224
 
     # Observation and action spaces
     action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(6,))
@@ -293,7 +291,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
 
     # Command/target pose settings
     target_pose_range = {
-        "x": (0.5, 0.7),
+        "x": (0.6, 0.8),
         "y": (0.45, 0.55),
         "z": (-0.2, 0.2),  # wrt base link of robot [-80mm to +320mm] irl
         "roll": (0.0, 0.0),
@@ -311,18 +309,18 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
 
     # Human arm movement settings
     arm_position_bounds = {
-        "x": (1.0, 1.2),
-        "y": (-0.5, 0.5),
-        "z": (0.80, 1.2),
+        "x": (0.9, 1.1),
+        "y": (-0.3, 0.3),
+        "z": (0.7, 1.0),
     }
     arm_movement_speed = 0.3  # Speed of random movement
 
     # Reward settings
-    reward_distance_weight = -2.5
-    reward_distance_tanh_weight = 1.5
+    reward_distance_weight = -1.0
+    reward_distance_tanh_weight = 1.0
     reward_distance_tanh_std = 0.1
-    reward_orientation_weight = -1.0
-    reward_torque_weight = -0.001  # Replaced torque with action penalty
+    reward_orientation_weight = -2.0
+    reward_torque_weight = -0.01  # Replaced torque with action penalty
     reward_table_collision_weight = -4.0
     reward_arm_avoidance_weight = 7.0  # Changed from obstacle
 
@@ -334,8 +332,12 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Huber loss parameters
     huber_delta = 0.08  # Delta parameter for Huber loss
 
+    # Absolute joint-target action settings
+    joint_limit_safety_margin = 0.05  # radians
+    max_joint_velocity = 1.5  # rad/s slew-rate limit for commanded targets
+
     # Action filter settings
-    action_filter_order = 2
+    action_filter_order = 0
     action_filter_cutoff_freq = 8.0
     action_filter_damping_ratio = 0.707
 
@@ -349,19 +351,23 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Camera preprocessing settings
     camera_crop_top = 60
     camera_crop_bottom = 20
+    rollout_log_enabled = True
+    rollout_log_path = "/home/adi2440/moveit2_UR5/src/rl_ur5_controller/rl_ur5_controller/isaac_logs/rgb_v5_sim.hdf5"
+    rollout_log_flush_interval = 100
+    rollout_log_stride = 1
 
     # Visualization settings
     visualize_camera_interval = 20000  # Visualize camera every N steps
     visualization_save_path = "./visualize_camera_images"  # Path to save visualizations
 
     # Noise settings
-    joint_pos_noise_min = -0.01
-    joint_pos_noise_max = 0.01
+    joint_pos_noise_min = -0.005
+    joint_pos_noise_max = 0.005
     joint_vel_noise_min = -0.001
     joint_vel_noise_max = 0.001
 
     # Reset settings
-    robot_base_pose = [-0.568, -0.858, 1.402, -2.185, -1.6060665, 1.64142667]
+    robot_base_pose = [-0.768, -0.658, 1.402, -2.185, -1.6060665, 1.64142667]
     robot_reset_noise_range = 0.05
 
 
@@ -378,6 +384,9 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
     ):
         # Store config
         self.cfg = cfg
+        self._rollout_logger = None
+        self._rollout_episode_ids = None
+        self._next_rollout_episode_id = 0
 
         # === episode / logging bookkeeping ===
         self._episode_counter = 0
@@ -417,6 +426,12 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         )
         self._target_poses = torch.zeros((self.num_envs, 7), device=self.device)
         self._command_time_left = torch.zeros(self.num_envs, device=self.device)
+        self.actions = torch.zeros_like(self._robot_dof_targets)
+        self.policy_actions = torch.zeros_like(self._robot_dof_targets)
+        self._rollout_episode_ids = torch.arange(
+            self.num_envs, device=self.device, dtype=torch.int64
+        )
+        self._next_rollout_episode_id = int(self.num_envs)
 
         # Arm movement state
         self._arm_target_pos = torch.zeros((self.num_envs, 3), device=self.device)
@@ -443,9 +458,25 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             * float("inf"),
         }
 
+        if self.cfg.rollout_log_enabled:
+            self._rollout_logger = RolloutLogger(
+                path=self.cfg.rollout_log_path,
+                run_prefix="arm_avoidance",
+                flush_interval=self.cfg.rollout_log_flush_interval,
+                metadata={
+                    "task": "arm_avoidance",
+                    "num_envs": int(self.num_envs),
+                    "state_dim": int(self.cfg.state_dim),
+                    "action_dim": int(self.cfg.action_space.shape[0]),
+                    "camera_target_height": int(self.cfg.camera_target_height),
+                    "camera_target_width": int(self.cfg.camera_target_width),
+                },
+            )
+            print(f"[INFO] Rollout logging enabled: {self._rollout_logger.path}")
+
         # Log initial information
         print(f"[INFO] Environment initialized with {self.num_envs} environments")
-        print(f"[INFO] Action scale: {self.cfg.action_scale}")
+        print("[INFO] Action mode: normalized absolute joint targets")
         print(f"[INFO] Target pose range X: {self.cfg.target_pose_range['x']}")
         print(f"[INFO] Target pose range Y: {self.cfg.target_pose_range['y']}")
         print(f"[INFO] Target pose range Z: {self.cfg.target_pose_range['z']}")
@@ -465,6 +496,9 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
     def close(self):
         """Cleanup for the environment."""
+        if self._rollout_logger is not None:
+            self._rollout_logger.close()
+            self._rollout_logger = None
         super().close()
 
     def _setup_scene(self):
@@ -588,14 +622,14 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """Apply actions before physics step."""
-        # Store raw actions
-        self.actions = actions.clone().clamp(-1.0, 1.0)
+        self.policy_actions = actions.clone().clamp(-1.0, 1.0)
 
-        # Apply action filtering
-        filtered_actions = self._apply_action_filter(self.actions)
+        if self.cfg.action_filter_order == 2:
+            filtered_actions = self._apply_action_filter(self.policy_actions)
+        else:
+            filtered_actions = self.policy_actions
 
-        # Scale actions
-        self.actions = filtered_actions * self.cfg.action_scale
+        self.actions = self._policy_actions_to_joint_targets(filtered_actions)
 
         # Update command timer
         self._command_time_left -= self.physics_dt
@@ -623,32 +657,44 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
     def _apply_action(self) -> None:
         """Apply the processed actions to the robot with safety checks."""
-        # Get current joint positions
         current_joint_pos = self._robot.data.joint_pos[:, self._joint_indices]
-
-        # Add actions to current positions for position control
-        self._robot_dof_targets = current_joint_pos + self.actions
-
-        # Clamp to joint limits with safety margin
-        safety_margin = 0.05  # radians
-        self._robot_dof_targets = torch.clamp(
-            self._robot_dof_targets,
-            self._robot_dof_lower_limits + safety_margin,
-            self._robot_dof_upper_limits - safety_margin,
+        desired_joint_pos = torch.clamp(
+            self.actions,
+            self._robot_dof_lower_limits + self.cfg.joint_limit_safety_margin,
+            self._robot_dof_upper_limits - self.cfg.joint_limit_safety_margin,
         )
-
-        # Apply velocity limits for safety
-        max_velocity = 1.5  # rad/s
-        velocity_command = (
-            self._robot_dof_targets - current_joint_pos
-        ) / self.physics_dt
-        velocity_command = torch.clamp(velocity_command, -max_velocity, max_velocity)
-        self._robot_dof_targets = current_joint_pos + velocity_command * self.physics_dt
+        max_joint_delta = self.cfg.max_joint_velocity * self.physics_dt
+        joint_delta = torch.clamp(
+            desired_joint_pos - current_joint_pos,
+            -max_joint_delta,
+            max_joint_delta,
+        )
+        self._robot_dof_targets = current_joint_pos + joint_delta
 
         # Set joint position targets
         self._robot.set_joint_position_target(
             self._robot_dof_targets, joint_ids=self._joint_indices
         )
+
+    def _policy_actions_to_joint_targets(
+        self, policy_actions: torch.Tensor
+    ) -> torch.Tensor:
+        """Map normalized policy actions in [-1, 1] to absolute joint targets."""
+        lower_limits = self._robot_dof_lower_limits + self.cfg.joint_limit_safety_margin
+        upper_limits = self._robot_dof_upper_limits - self.cfg.joint_limit_safety_margin
+        joint_center = 0.5 * (upper_limits + lower_limits)
+        joint_half_range = 0.5 * (upper_limits - lower_limits)
+        return joint_center + policy_actions * joint_half_range
+
+    def _joint_targets_to_policy_actions(
+        self, joint_targets: torch.Tensor
+    ) -> torch.Tensor:
+        """Map absolute joint targets to normalized policy action coordinates."""
+        lower_limits = self._robot_dof_lower_limits + self.cfg.joint_limit_safety_margin
+        upper_limits = self._robot_dof_upper_limits - self.cfg.joint_limit_safety_margin
+        joint_center = 0.5 * (upper_limits + lower_limits)
+        joint_half_range = torch.clamp(0.5 * (upper_limits - lower_limits), min=1e-6)
+        return torch.clamp((joint_targets - joint_center) / joint_half_range, -1.0, 1.0)
 
     def _apply_action_filter(self, actions: torch.Tensor) -> torch.Tensor:
         """Apply second-order Butterworth filter to actions."""
@@ -851,6 +897,7 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
         # Get camera observations
         camera_obs = self._get_camera_observations()
+        self._log_rollout_batch(state_obs, camera_obs)
 
         obs = {"image": camera_obs, "state": state_obs}
         observations = {"policy": obs}
@@ -870,6 +917,7 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             joint_pos_noisy = joint_pos + joint_pos_noise
         else:
             joint_pos_noisy = joint_pos
+        joint_pos_obs = self._joint_targets_to_policy_actions(joint_pos_noisy)
 
         # Get joint velocities with noise
         # joint_vel = self._robot.data.joint_vel[:, self._joint_indices]
@@ -887,7 +935,7 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         # Concatenate all state observations
         state_obs = torch.cat(
             [
-                joint_pos_noisy,  # 6 dims
+                joint_pos_obs,  # 6 dims, normalized to match action coordinates
                 # joint_vel_noisy,      # 6 dims
                 target_pose,  # 7 dims
             ],
@@ -1418,6 +1466,13 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
             # Update target to prevent immediate re-collision
             self._robot_dof_targets[env_id] = joint_pos
+            self.actions[env_id] = joint_pos
+            normalized_joint_pos = self._joint_targets_to_policy_actions(joint_pos)
+            self.policy_actions[env_id] = normalized_joint_pos
+            self._action_filter_x1[env_id] = normalized_joint_pos
+            self._action_filter_x2[env_id] = normalized_joint_pos
+            self._action_filter_y1[env_id] = normalized_joint_pos
+            self._action_filter_y2[env_id] = normalized_joint_pos
 
             # Log the reset
             if len(stuck_env_ids) <= 2:  # Avoid spam
@@ -1519,6 +1574,10 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         self._robot.write_joint_state_to_sim(
             joint_pos, joint_vel, joint_ids=self._joint_indices, env_ids=env_ids
         )
+        self._robot_dof_targets[env_ids] = joint_pos
+        self.actions[env_ids] = joint_pos
+        normalized_joint_pos = self._joint_targets_to_policy_actions(joint_pos)
+        self.policy_actions[env_ids] = normalized_joint_pos
 
         # Reset arm position and orientation targets
         for i, env_id in enumerate(env_ids):
@@ -1572,13 +1631,22 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         self._sample_target_poses_for_reset(env_ids)
 
         # Reset action filter states
-        self._action_filter_x1[env_ids] = 0.0
-        self._action_filter_x2[env_ids] = 0.0
-        self._action_filter_y1[env_ids] = 0.0
-        self._action_filter_y2[env_ids] = 0.0
+        self._action_filter_x1[env_ids] = normalized_joint_pos
+        self._action_filter_x2[env_ids] = normalized_joint_pos
+        self._action_filter_y1[env_ids] = normalized_joint_pos
+        self._action_filter_y2[env_ids] = normalized_joint_pos
 
         # Reset timers
         self._command_time_left[env_ids] = self.cfg.command_resampling_time
+        if self._rollout_episode_ids is not None:
+            episode_ids = torch.arange(
+                self._next_rollout_episode_id,
+                self._next_rollout_episode_id + num_resets,
+                device=self.device,
+                dtype=torch.int64,
+            )
+            self._rollout_episode_ids[env_ids] = episode_ids
+            self._next_rollout_episode_id += num_resets
 
     def _sample_target_poses_for_reset(self, env_ids: Sequence[int]):
         """Sample new target poses for reset environments."""
@@ -1620,6 +1688,49 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         # Update buffers
         self._target_poses[env_ids, :3] = torch.stack([x, y, z], dim=-1)
         self._target_poses[env_ids, 3:7] = target_quat
+
+    def _log_rollout_batch(
+        self, state_obs: torch.Tensor, camera_obs: torch.Tensor
+    ) -> None:
+        if self._rollout_logger is None:
+            return
+        if self.common_step_counter % max(1, int(self.cfg.rollout_log_stride)) != 0:
+            return
+
+        joint_pos = self._robot.data.joint_pos[:, self._joint_indices]
+        joint_vel = self._robot.data.joint_vel[:, self._joint_indices]
+        robot_pos = self._robot.data.root_state_w[:, :3]
+        robot_quat = self._robot.data.root_state_w[:, 3:7]
+        ee_pos_w = self._ee_frame.data.target_pos_w[..., 0, :]
+        ee_quat_w = self._ee_frame.data.target_quat_w[..., 0, :]
+        ee_pos_b, ee_quat_b = math_utils.subtract_frame_transforms(
+            robot_pos, robot_quat, ee_pos_w, ee_quat_w
+        )
+        ee_pose = torch.cat([ee_pos_b, ee_quat_b], dim=-1)
+
+        self._rollout_logger.append_batch(
+            states=state_obs.detach().cpu().numpy().astype(np.float32),
+            images=camera_obs.detach().cpu().numpy().astype(np.float32),
+            base_actions=self.actions.detach().cpu().numpy().astype(np.float32),
+            policy_actions=self.policy_actions.detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32),
+            joint_positions=joint_pos.detach().cpu().numpy().astype(np.float32),
+            joint_velocities=joint_vel.detach().cpu().numpy().astype(np.float32),
+            joint_targets=self._robot_dof_targets.detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32),
+            ee_poses=ee_pose.detach().cpu().numpy().astype(np.float32),
+            target_poses=self._target_poses.detach().cpu().numpy().astype(np.float32),
+            episode_ids=self._rollout_episode_ids.detach()
+            .cpu()
+            .numpy()
+            .astype(np.int64),
+            step_ids=self.episode_length_buf.detach().cpu().numpy().astype(np.int64),
+            env_ids=np.arange(self.num_envs, dtype=np.int64),
+        )
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         # Create markers for visualizing the goal poses
@@ -1762,15 +1873,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             ee_position, arm_position, arm_quat, arm_half_extents
         )
         beta_values = self._compute_beta_transition(min_distances)
-
-        joint_vel = self._robot.data.joint_vel[:, self._joint_indices]
-        max_velocity = 1.5  # rad/s
-        current_joint_pos = self._robot.data.joint_pos[:, self._joint_indices]
-        velocity_command = (
-            self._robot_dof_targets - current_joint_pos
-        ) / self.physics_dt
-        velocity_command = torch.clamp(velocity_command, -max_velocity, max_velocity)
-        self._robot_dof_targets = current_joint_pos + velocity_command * self.physics_dt
 
         # self._save_joint_targets()
 
