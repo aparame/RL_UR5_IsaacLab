@@ -42,6 +42,10 @@ matplotlib.use("Agg")  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import os
+import json
+from PIL import Image
+import itertools
+
 
 # Robot configuration
 from .assets.ur5 import UR5_GRIPPER_CFG
@@ -53,6 +57,10 @@ try:
 except ImportError:
     # Define minimal thresholds if file not found
     TABLE_HEIGHT = 0.72
+    CUBE_HEIGHT = 0.0382
+    CUBE_WIDTH = 0.0286
+    CUBE_LENGTH = 0.0635
+    CUBE_START_HEIGHT = TABLE_HEIGHT + (CUBE_HEIGHT / 2)
     PLACEMENT_POS_THRESHOLD = 0.05
     GRIPPER_OPEN_THRESHOLD = 5.0
     GRIPPER_CLOSED_THRESHOLD = 25.0
@@ -73,11 +81,48 @@ except ImportError:
 
 
 @configclass
-class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
-    """Configuration for the direct RL environment."""
+class AGANDataCollectionEnvCfg(DirectRLEnvCfg):
+    """Configuration for the direct RL environment with Gray+Depth observations."""
 
     # Visualization settings - MOVED TO TOP to fix reference issue
-    debug_vis = True  # Enable/disable debug visualization
+    debug_vis = False  # Enable/disable debug visualization
+
+    # AGAN Data Collection Switch
+    save_agan_images = False  # Legacy PNG/JSONL export. HDF5 RGBD logging is preferred.
+    agan_data_dir = "agan_dataset_run_2"
+    agan_save_interval = 3  # Save every 3rd step (30Hz / 3 = 10Hz)
+
+    # Synchronized RGBD/proprio/action rollout logging for latent dynamics training.
+    save_rgbd_rollouts = False
+    rgbd_rollout_log_path = "rgbd_dataset_watermark_1"  # Empty means create an HDF5 file inside agan_data_dir.
+    rgbd_rollout_flush_interval = 100
+    rgbd_rollout_stride = agan_save_interval
+    rgbd_depth_max = 10.0
+    max_rgbd_rollout_episodes = (
+        30  # Counted across all parallel envs. Set <= 0 to disable auto-shutdown.
+    )
+
+    # Live replay attack settings. The policy receives replayed camera
+    # observations after the trigger; HDF5 logging keeps both spoofed and live RGB-D.
+    replay_attack_enabled = False
+    replay_attack_trigger_step = (
+        0  # Earliest per-episode step to search for a state-matched replay source.
+    )
+    replay_attack_delay_steps = 120
+    replay_attack_warmup_steps = 0
+    replay_attack_buffer_capacity = 4096
+    replay_attack_match_threshold = 1.0
+    replay_attack_joint_match_scale = 0.05
+    replay_attack_arm_match_scale = 0.05
+    replay_attack_print_start = True
+    replay_attack_print_max_envs = 8
+
+    # Watermark settings
+    watermark_enabled = False
+    watermark_covariance = 0.05  # Standard deviation of 0.01 matches the magnitude of joint_pos_noise bounds
+
+    # Arm dimensions for BBox approximation (approximate dimensions in meters)
+    arm_approx_dims = [0.2, 0.65, 0.1]  # Width, Length, Depth
 
     marker_cfg = FRAME_MARKER_CFG.copy()
     marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
@@ -92,7 +137,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/table",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/table.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/table.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -109,7 +154,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     arm_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/arm",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/arm.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/arm.usd",
             scale=(0.01, 0.01, 0.01),  # Ensure no scaling
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
@@ -150,7 +195,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     i2r_plane_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/i2r_plane",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/i2r_plane.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/i2r_plane.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -167,7 +212,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     clemson_plane_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/clemson_plane",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/clemson_plane.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/clemson_plane.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -196,49 +241,64 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
         ],
     )
 
-    # Camera
-    tiled_camera: TiledCameraCfg = TiledCameraCfg(
-        prim_path="/World/envs/env_.*/Camera",
-        data_types=["rgb"],  # No depth as requested
+    # Grayscale Camera
+    tiled_camera_gray: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/CameraGray",
+        data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
-            # ZED2 calculated parameters:
-            # fx = fy = 361.63 pixels -> focal_length = 2.955mm
-            # 1/3" CMOS sensor: 5.229 x 2.942 mm
-            focal_length=2.82706,  # Changed from 2.208
-            focus_distance=30.0,  # Keep existing (focus distance for rendering)
-            horizontal_aperture=5.229,  # Changed from 5.76 (ZED2 sensor width)
-            vertical_aperture=2.942,  # Changed from 3.24 (ZED2 sensor height)
-            clipping_range=(0.1, 1000.0),  # Keep existing
+            focal_length=2.82706,
+            focus_distance=30.0,
+            horizontal_aperture=5.229,
+            vertical_aperture=2.942,
+            clipping_range=(0.1, 1000.0),
         ),
-        # ZED2 resolution from camera_info
-        width=640,  # Matches ZED2 exactly
-        height=480,  # Matches ZED2 exactly
-        # Keep your existing camera pose
+        width=640,
+        height=480,
         offset=TiledCameraCfg.OffsetCfg(
-            pos=(1.5, 0.0, 1.143),  # Unchanged
-            rot=(0.59637, 0.37993, 0.37993, 0.59637),  # Unchanged
-            convention="opengl",  # Unchanged
+            pos=(1.27, -0.06, 1.143),
+            rot=(0.59637, 0.37993, 0.37993, 0.59637),
+            convention="opengl",
+        ),
+    )
+
+    # Depth Camera
+    tiled_camera_depth: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/CameraDepth",
+        data_types=["distance_to_image_plane"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=2.82706,
+            focus_distance=30.0,
+            horizontal_aperture=5.229,
+            vertical_aperture=2.942,
+            clipping_range=(0.1, 1000.0),
+        ),
+        width=640,
+        height=480,
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(1.27, 0.0, 1.143),
+            rot=(0.59637, 0.37993, 0.37993, 0.59637),
+            convention="opengl",
         ),
     )
 
     # Basic environment settings
     episode_length_s = 6.0
     decimation = 4
-    action_scale = 0.3  # Kept for backward compatibility; unused for absolute actions
+    action_scale = 0.1  # Reduced for smoother movements
     state_dim = 13
-    camera_target_height = 224
-    camera_target_width = 224
+    camera_target_height = 120
+    camera_target_width = 160
 
     # Observation and action spaces
     action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(6,))
     state_space = 0
-    ## For PPO
+    # For PPO
     observation_space = gym.spaces.Dict(
         {
             "image": gym.spaces.Box(
                 low=float("-inf"),
                 high=float("inf"),
-                shape=(camera_target_height, camera_target_width, 3),
+                shape=(camera_target_height, camera_target_width, 2),
             ),
             "state": gym.spaces.Box(
                 low=float("-inf"), high=float("inf"), shape=(state_dim,)
@@ -270,7 +330,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     viewer = ViewerCfg(eye=(7.5, 7.5, 7.5), origin_type="world", env_index=0)
 
     # Curriculum learning settings
-    curriculum_enabled = True
+    curriculum_enabled = False
     curriculum_steps = [
         5000,
         10000,
@@ -305,24 +365,25 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     #     "z": (-0.4, 0.4),  # wrt base link of robot [-80mm to +320mm] irl
     # }
 
-    command_resampling_time = 6.0
+    command_resampling_time = 16.0
 
     # Human arm movement settings
     arm_position_bounds = {
         "x": (0.9, 1.1),
-        "y": (-0.3, 0.3),
+        "y": (-0.5, 0.5),
         "z": (0.7, 1.0),
     }
-    arm_movement_speed = 0.3  # Speed of random movement
+    arm_movement_speed = 0.15  # Speed of random movement
 
     # Reward settings
-    reward_distance_weight = -1.0
-    reward_distance_tanh_weight = 1.0
+    reward_distance_weight = -2.5
+    reward_distance_tanh_weight = 1.5
     reward_distance_tanh_std = 0.1
-    reward_orientation_weight = -2.0
-    reward_torque_weight = -0.01  # Replaced torque with action penalty
+    reward_orientation_weight = -1.0  # Increased to enforce downward orientation
+    # reward_torque_weight removed
     reward_table_collision_weight = -4.0
-    reward_arm_avoidance_weight = 7.0  # Changed from obstacle
+    reward_arm_avoidance_weight = 5.0  # Changed from obstacle
+    reward_action_rate_weight = -1.0  # Increased penalty for jagged movements
 
     # Artificial Potential Field parameters
     apf_critical_distance = 0.15  # db - critical distance for obstacle avoidance
@@ -332,14 +393,10 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Huber loss parameters
     huber_delta = 0.08  # Delta parameter for Huber loss
 
-    # Absolute joint-target action settings
-    joint_limit_safety_margin = 0.05  # radians
-    max_joint_velocity = 1.5  # rad/s slew-rate limit for commanded targets
-
-    # Action filter settings
-    action_filter_order = 0
-    action_filter_cutoff_freq = 8.0
-    action_filter_damping_ratio = 0.707
+    # Action filter settings - REMOVED
+    # action_filter_order = 2
+    # action_filter_cutoff_freq = 8.0
+    # action_filter_damping_ratio = 0.707
 
     # Termination settings
     position_threshold = 0.01
@@ -351,34 +408,30 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Camera preprocessing settings
     camera_crop_top = 60
     camera_crop_bottom = 20
-    rollout_log_enabled = True
-    rollout_log_path = "/home/adi2440/moveit2_UR5/src/rl_ur5_controller/rl_ur5_controller/isaac_logs/rgb_v5_sim.hdf5"
-    rollout_log_flush_interval = 100
-    rollout_log_stride = 1
 
     # Visualization settings
     visualize_camera_interval = 20000  # Visualize camera every N steps
     visualization_save_path = "./visualize_camera_images"  # Path to save visualizations
 
     # Noise settings
-    joint_pos_noise_min = -0.005
-    joint_pos_noise_max = 0.005
-    joint_vel_noise_min = -0.001
-    joint_vel_noise_max = 0.001
+    joint_pos_noise_min = 0.0
+    joint_pos_noise_max = 0.0
+    joint_vel_noise_min = 0.0
+    joint_vel_noise_max = 0.0
 
     # Reset settings
-    robot_base_pose = [-0.768, -0.658, 1.402, -2.185, -1.6060665, 1.64142667]
-    robot_reset_noise_range = 0.05
+    robot_base_pose = [-0.568, -0.858, 1.402, -2.185, -1.6060665, 1.64142667]
+    robot_reset_noise_range = 0.1
 
 
-class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
-    """Direct RL environment for object camera pose tracking with multi-observation space."""
+class AGANDataCollectionEnv(DirectRLEnv):
+    """Direct RL environment for object camera pose tracking with multi-observation space (Gray+Depth)."""
 
-    cfg: ObjCameraPoseTrackingDirectEnvCfg
+    cfg: AGANDataCollectionEnvCfg
 
     def __init__(
         self,
-        cfg: ObjCameraPoseTrackingDirectEnvCfg,
+        cfg: AGANDataCollectionEnvCfg,
         render_mode: str | None = None,
         **kwargs,
     ):
@@ -387,6 +440,19 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         self._rollout_logger = None
         self._rollout_episode_ids = None
         self._next_rollout_episode_id = 0
+        self._replay_policy_image_buffer = None
+        self._replay_rgbd_buffer = None
+        self._replay_state_buffer = None
+        self._replay_episode_id_buffer = None
+        self._replay_step_id_buffer = None
+        self._replay_env_id_buffer = None
+        self._replay_buffer_write_idx = 0
+        self._replay_buffer_count = 0
+        self._replay_attack_was_active = None
+        self._rgbd_rollout_completed_episodes = 0
+        self._rgbd_rollout_completed_attacked_episodes = 0
+        self._rgbd_rollout_waiting_for_attacks_printed = False
+        self._rgbd_rollout_shutdown_requested = False
 
         # === episode / logging bookkeeping ===
         self._episode_counter = 0
@@ -395,6 +461,7 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         self._state_obs_file = None
         self._state_csv_writer = None
         self._image_obs_dir = None
+        self.num_actions = 6
         # Initialize parent
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -426,18 +493,53 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         )
         self._target_poses = torch.zeros((self.num_envs, 7), device=self.device)
         self._command_time_left = torch.zeros(self.num_envs, device=self.device)
+        self.raw_actions = torch.zeros_like(self._robot_dof_targets)
         self.actions = torch.zeros_like(self._robot_dof_targets)
-        self.policy_actions = torch.zeros_like(self._robot_dof_targets)
+        self.base_actions = torch.zeros_like(self._robot_dof_targets)
+        self.sampled_watermarks = torch.zeros_like(self._robot_dof_targets)
+        self.effective_action_deltas = torch.zeros_like(self._robot_dof_targets)
         self._rollout_episode_ids = torch.arange(
             self.num_envs, device=self.device, dtype=torch.int64
         )
         self._next_rollout_episode_id = int(self.num_envs)
+        self._latest_attack_active = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self._latest_attack_trigger = torch.zeros_like(self._latest_attack_active)
+        self._latest_attack_source_episode_index = torch.full(
+            (self.num_envs,), -1, device=self.device, dtype=torch.int64
+        )
+        self._latest_attack_source_step_index = torch.full_like(
+            self._latest_attack_source_episode_index, -1
+        )
+        self._latest_attack_source_env_id = torch.full_like(
+            self._latest_attack_source_episode_index, -1
+        )
+        self._latest_attack_match_distance = torch.full(
+            (self.num_envs,), float("inf"), device=self.device, dtype=torch.float32
+        )
+        self._replay_attack_was_active = torch.zeros_like(self._latest_attack_active)
+        self._replay_attack_source_env_ids = torch.full(
+            (self.num_envs,), -1, device=self.device, dtype=torch.int64
+        )
+        self._replay_attack_source_start_slots = torch.full_like(
+            self._replay_attack_source_env_ids, -1
+        )
+        self._replay_attack_start_steps = torch.full_like(
+            self._replay_attack_source_env_ids, -1
+        )
+        self._replay_attack_match_distances = torch.full(
+            (self.num_envs,), float("inf"), device=self.device, dtype=torch.float32
+        )
+        self._init_replay_attack_buffers()
 
         # Arm movement state
         self._arm_target_pos = torch.zeros((self.num_envs, 3), device=self.device)
 
-        # Initialize action filter
-        self._setup_action_filter()
+        # Initialize previous actions for smoothness penalty
+        self.previous_actions = torch.zeros(
+            (self.num_envs, self.num_actions), device=self.device
+        )
 
         # Curriculum learning state
         self._curriculum_level = 0
@@ -458,25 +560,69 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             * float("inf"),
         }
 
-        if self.cfg.rollout_log_enabled:
+        if self.cfg.save_rgbd_rollouts:
+            rollout_path = self.cfg.rgbd_rollout_log_path or self.cfg.agan_data_dir
+            rollout_run_prefix = "rgbd_proprio_actions"
+            if self.cfg.replay_attack_enabled:
+                rollout_run_prefix = f"{rollout_run_prefix}_replay_attacked"
+                path_root, path_ext = os.path.splitext(str(rollout_path))
+                if path_ext.lower() in {
+                    ".h5",
+                    ".hdf5",
+                } and "replay_attacked" not in os.path.basename(path_root):
+                    rollout_path = f"{path_root}_replay_attacked{path_ext}"
             self._rollout_logger = RolloutLogger(
-                path=self.cfg.rollout_log_path,
-                run_prefix="arm_avoidance",
-                flush_interval=self.cfg.rollout_log_flush_interval,
+                path=rollout_path,
+                run_prefix=rollout_run_prefix,
+                flush_interval=self.cfg.rgbd_rollout_flush_interval,
                 metadata={
-                    "task": "arm_avoidance",
+                    "task": "agan_rgbd_data_collection",
                     "num_envs": int(self.num_envs),
                     "state_dim": int(self.cfg.state_dim),
                     "action_dim": int(self.cfg.action_space.shape[0]),
+                    "rgbd_channels": 4,
+                    "proprio_dim": 19,
                     "camera_target_height": int(self.cfg.camera_target_height),
                     "camera_target_width": int(self.cfg.camera_target_width),
+                    "rgbd_depth_units": "normalized_clipped_depth",
+                    "rgbd_depth_max_m": float(self.cfg.rgbd_depth_max),
+                    "max_rgbd_rollout_episodes": int(
+                        self.cfg.max_rgbd_rollout_episodes
+                    ),
+                    "watermark_enabled": bool(self.cfg.watermark_enabled),
+                    "watermark_covariance": float(self.cfg.watermark_covariance),
+                    "replay_attack_enabled": bool(self.cfg.replay_attack_enabled),
+                    "replay_attack_trigger_step": int(
+                        self.cfg.replay_attack_trigger_step
+                    ),
+                    "replay_attack_delay_steps": int(
+                        self.cfg.replay_attack_delay_steps
+                    ),
+                    "replay_attack_warmup_steps": int(
+                        self.cfg.replay_attack_warmup_steps
+                    ),
+                    "replay_attack_buffer_capacity": int(
+                        self.cfg.replay_attack_buffer_capacity
+                    ),
+                    "replay_attack_match_threshold": float(
+                        self.cfg.replay_attack_match_threshold
+                    ),
+                    "replay_attack_joint_match_scale": float(
+                        self.cfg.replay_attack_joint_match_scale
+                    ),
+                    "replay_attack_arm_match_scale": float(
+                        self.cfg.replay_attack_arm_match_scale
+                    ),
+                    "replay_attack_print_start": bool(
+                        self.cfg.replay_attack_print_start
+                    ),
                 },
             )
-            print(f"[INFO] Rollout logging enabled: {self._rollout_logger.path}")
+            print(f"[INFO] RGBD rollout logging enabled: {self._rollout_logger.path}")
 
         # Log initial information
         print(f"[INFO] Environment initialized with {self.num_envs} environments")
-        print("[INFO] Action mode: normalized absolute joint targets")
+        print(f"[INFO] Action scale: {self.cfg.action_scale}")
         print(f"[INFO] Target pose range X: {self.cfg.target_pose_range['x']}")
         print(f"[INFO] Target pose range Y: {self.cfg.target_pose_range['y']}")
         print(f"[INFO] Target pose range Z: {self.cfg.target_pose_range['z']}")
@@ -499,13 +645,19 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         if self._rollout_logger is not None:
             self._rollout_logger.close()
             self._rollout_logger = None
+        if self._state_obs_file is not None:
+            self._state_obs_file.close()
+            self._state_obs_file = None
+        self._cleanup_joint_targets_file()
         super().close()
 
     def _setup_scene(self):
         """Set up the scene with robots, table, obstacles, cameras, etc."""
         # --- spawn all prims in the source environment only ---
         self._robot = Articulation(self.cfg.robot_cfg)
-        self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+        self._tiled_camera_gray = TiledCamera(self.cfg.tiled_camera_gray)
+        self._tiled_camera_depth = TiledCamera(self.cfg.tiled_camera_depth)
+
         self._ee_frame = FrameTransformer(self.cfg.ee_frame_cfg)
         self._arm = RigidObject(self.cfg.arm_cfg)
 
@@ -520,7 +672,8 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
         # --- register handles in IsaacLab's scene registry ---
         self.scene.articulations["robot"] = self._robot
-        self.scene.sensors["tiled_camera"] = self._tiled_camera
+        self.scene.sensors["tiled_camera_gray"] = self._tiled_camera_gray
+        self.scene.sensors["tiled_camera_depth"] = self._tiled_camera_depth
         self.scene.sensors["ee_frame"] = self._ee_frame
         self.scene.rigid_objects["arm"] = self._arm
 
@@ -545,37 +698,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             intensity=1000.0, color=(1.0, 1.0, 0.9), angle=0.53
         )
         dir_light_cfg.func("/World/DirectionalLight", dir_light_cfg)
-
-    def _setup_action_filter(self):
-        """Initialize action filter states and coefficients."""
-        num_joints = len(self._joint_indices)
-        self._action_filter_x1 = torch.zeros(
-            (self.num_envs, num_joints), device=self.device
-        )
-        self._action_filter_x2 = torch.zeros(
-            (self.num_envs, num_joints), device=self.device
-        )
-        self._action_filter_y1 = torch.zeros(
-            (self.num_envs, num_joints), device=self.device
-        )
-        self._action_filter_y2 = torch.zeros(
-            (self.num_envs, num_joints), device=self.device
-        )
-
-        # Calculate filter coefficients
-        if self.cfg.action_filter_order == 2:
-            omega = 2.0 * math.pi * self.cfg.action_filter_cutoff_freq
-            dt = self.cfg.sim.dt
-            k = omega * dt
-            a1 = k * k
-            a2 = k * 2.0 * self.cfg.action_filter_damping_ratio
-            a3 = a1 + a2 + 1.0
-
-            self._filter_b0 = a1 / a3
-            self._filter_b1 = 2.0 * a1 / a3
-            self._filter_b2 = a1 / a3
-            self._filter_a1 = (2.0 * a1 - 2.0) / a3
-            self._filter_a2 = (a1 - a2 + 1.0) / a3
 
     def _update_curriculum_settings(self):
         """Update environment settings based on curriculum level."""
@@ -622,14 +744,33 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """Apply actions before physics step."""
-        self.policy_actions = actions.clone().clamp(-1.0, 1.0)
-
-        if self.cfg.action_filter_order == 2:
-            filtered_actions = self._apply_action_filter(self.policy_actions)
+        # Update previous actions (before overwriting self.actions)
+        if hasattr(self, "actions"):
+            self.previous_actions = self.actions.clone()
         else:
-            filtered_actions = self.policy_actions
+            self.previous_actions = torch.zeros_like(actions)
 
-        self.actions = self._policy_actions_to_joint_targets(filtered_actions)
+        # Store raw actions
+        self.raw_actions = actions.clone().clamp(-1.0, 1.0)
+
+        # Action filter removed for direct control
+        # filtered_actions = self._apply_action_filter(self.actions)
+
+        # Scale actions
+        self.base_actions = self.raw_actions * self.cfg.action_scale
+
+        if self.cfg.watermark_enabled:
+            # Sample additive Gaussian watermark
+            std = self.cfg.watermark_covariance
+            self.sampled_watermarks = torch.randn_like(self.base_actions) * std
+
+            # Apply watermark to the scaled actions
+            self.actions = self.base_actions + self.sampled_watermarks
+            self.effective_action_deltas = self.actions - self.base_actions
+        else:
+            self.actions = self.base_actions.clone()
+            self.sampled_watermarks.zero_()
+            self.effective_action_deltas.zero_()
 
         # Update command timer
         self._command_time_left -= self.physics_dt
@@ -655,67 +796,36 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         # Update debug visualization if enabled
         self._update_debug_visualization()
 
+        # Save data for GAN training
+
     def _apply_action(self) -> None:
         """Apply the processed actions to the robot with safety checks."""
+        # Get current joint positions
         current_joint_pos = self._robot.data.joint_pos[:, self._joint_indices]
-        desired_joint_pos = torch.clamp(
-            self.actions,
-            self._robot_dof_lower_limits + self.cfg.joint_limit_safety_margin,
-            self._robot_dof_upper_limits - self.cfg.joint_limit_safety_margin,
+
+        # Add actions to current positions for position control
+        self._robot_dof_targets = current_joint_pos + self.actions
+
+        # Clamp to joint limits with safety margin
+        safety_margin = 0.05  # radians
+        self._robot_dof_targets = torch.clamp(
+            self._robot_dof_targets,
+            self._robot_dof_lower_limits + safety_margin,
+            self._robot_dof_upper_limits - safety_margin,
         )
-        max_joint_delta = self.cfg.max_joint_velocity * self.physics_dt
-        joint_delta = torch.clamp(
-            desired_joint_pos - current_joint_pos,
-            -max_joint_delta,
-            max_joint_delta,
-        )
-        self._robot_dof_targets = current_joint_pos + joint_delta
+
+        # Apply velocity limits for safety
+        max_velocity = 1.5  # rad/s
+        velocity_command = (
+            self._robot_dof_targets - current_joint_pos
+        ) / self.physics_dt
+        velocity_command = torch.clamp(velocity_command, -max_velocity, max_velocity)
+        self._robot_dof_targets = current_joint_pos + velocity_command * self.physics_dt
 
         # Set joint position targets
         self._robot.set_joint_position_target(
             self._robot_dof_targets, joint_ids=self._joint_indices
         )
-
-    def _policy_actions_to_joint_targets(
-        self, policy_actions: torch.Tensor
-    ) -> torch.Tensor:
-        """Map normalized policy actions in [-1, 1] to absolute joint targets."""
-        lower_limits = self._robot_dof_lower_limits + self.cfg.joint_limit_safety_margin
-        upper_limits = self._robot_dof_upper_limits - self.cfg.joint_limit_safety_margin
-        joint_center = 0.5 * (upper_limits + lower_limits)
-        joint_half_range = 0.5 * (upper_limits - lower_limits)
-        return joint_center + policy_actions * joint_half_range
-
-    def _joint_targets_to_policy_actions(
-        self, joint_targets: torch.Tensor
-    ) -> torch.Tensor:
-        """Map absolute joint targets to normalized policy action coordinates."""
-        lower_limits = self._robot_dof_lower_limits + self.cfg.joint_limit_safety_margin
-        upper_limits = self._robot_dof_upper_limits - self.cfg.joint_limit_safety_margin
-        joint_center = 0.5 * (upper_limits + lower_limits)
-        joint_half_range = torch.clamp(0.5 * (upper_limits - lower_limits), min=1e-6)
-        return torch.clamp((joint_targets - joint_center) / joint_half_range, -1.0, 1.0)
-
-    def _apply_action_filter(self, actions: torch.Tensor) -> torch.Tensor:
-        """Apply second-order Butterworth filter to actions."""
-        if self.cfg.action_filter_order == 2:
-            filtered_actions = (
-                self._filter_b0 * actions
-                + self._filter_b1 * self._action_filter_x1
-                + self._filter_b2 * self._action_filter_x2
-                - self._filter_a1 * self._action_filter_y1
-                - self._filter_a2 * self._action_filter_y2
-            )
-
-            # Update filter memory
-            self._action_filter_x2 = self._action_filter_x1.clone()
-            self._action_filter_x1 = actions.clone()
-            self._action_filter_y2 = self._action_filter_y1.clone()
-            self._action_filter_y1 = filtered_actions.clone()
-
-            return filtered_actions
-        else:
-            return actions
 
     def _sample_commands(self, env_ids: Sequence[int]) -> None:
         """Randomize the target poses for the given env indices."""
@@ -776,114 +886,98 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             )
 
     def _update_arm_position(self):
-        """Update the human arm position with simple linear motion pattern."""
+        """Update the human arm position with Lissajous curve motion pattern for dense coverage."""
         # Initialize motion parameters if not exists
         if not hasattr(self, "_arm_motion_time"):
             self._arm_motion_time = torch.zeros(self.num_envs, device=self.device)
-            self._arm_motion_pattern = torch.randint(
-                0, 3, (self.num_envs,), device=self.device
-            )  # 0: X-axis, 1: Y-axis, 2: diagonal
+            # Add unique phase offsets per environment so they explore different parts of space
+            self._phase_offsets_x = (
+                torch.rand(self.num_envs, device=self.device) * 2 * math.pi
+            )
+            self._phase_offsets_y = (
+                torch.rand(self.num_envs, device=self.device) * 2 * math.pi
+            )
+            self._phase_offsets_z = (
+                torch.rand(self.num_envs, device=self.device) * 2 * math.pi
+            )
+
+            # Use non-commensurate frequencies for dense Lissajous coverage
+            base_freq = self.cfg.arm_movement_speed
+            self._freq_x = base_freq * 0.31
+            self._freq_y = base_freq * 0.43
+            self._freq_z = base_freq * 0.59
 
         # Get current arm positions and orientations
         arm_positions = self._arm.data.root_pos_w.clone()
-        arm_quats = self._arm.data.root_quat_w.clone()
 
         # Update motion time
         self._arm_motion_time += self.physics_dt
 
-        for i in range(self.num_envs):
-            # Calculate base position (center of motion range)
-            base_x = (
-                self.cfg.arm_position_bounds["x"][0]
-                + self.cfg.arm_position_bounds["x"][1]
-            ) / 2
-            base_y = (
-                self.cfg.arm_position_bounds["y"][0]
-                + self.cfg.arm_position_bounds["y"][1]
-            ) / 2
-            base_z = (
-                self.cfg.arm_position_bounds["z"][0]
-                + self.cfg.arm_position_bounds["z"][1]
-            ) / 2
+        # Calculate bounding box centers and amplitudes
+        bounds_x = self.cfg.arm_position_bounds["x"]
+        bounds_y = self.cfg.arm_position_bounds["y"]
+        bounds_z = self.cfg.arm_position_bounds["z"]
 
-            # Calculate motion amplitudes
-            amp_x = (
-                (
-                    self.cfg.arm_position_bounds["x"][1]
-                    - self.cfg.arm_position_bounds["x"][0]
-                )
-                / 2
-                * 0.8
-            )
-            amp_y = (
-                (
-                    self.cfg.arm_position_bounds["y"][1]
-                    - self.cfg.arm_position_bounds["y"][0]
-                )
-                / 2
-                * 0.8
-            )
-            amp_z = (
-                (
-                    self.cfg.arm_position_bounds["z"][1]
-                    - self.cfg.arm_position_bounds["z"][0]
-                )
-                / 2
-                * 0.8
-            )
+        center_x = (bounds_x[0] + bounds_x[1]) / 2.0
+        center_y = (bounds_y[0] + bounds_y[1]) / 2.0
+        center_z = (bounds_z[0] + bounds_z[1]) / 2.0
 
-            # Linear motion with triangle wave (back and forth)
-            # Period of 4 seconds for complete back-and-forth motion
-            period = 6.0
-            phase = (self._arm_motion_time[i] % period) / period
+        amp_x = (bounds_x[1] - bounds_x[0]) / 2.0
+        amp_y = (bounds_y[1] - bounds_y[0]) / 2.0
+        amp_z = (bounds_z[1] - bounds_z[0]) / 2.0
 
-            # Triangle wave: 0->1->0
-            if phase < 0.5:
-                motion_factor = phase * 2.0
-            else:
-                motion_factor = 2.0 - phase * 2.0
+        # Calculate positions using sine waves for Lissajous curves
+        t = self._arm_motion_time
 
-            # Apply motion pattern
-            if self._arm_motion_pattern[i] == 0:  # X-axis motion
-                new_x = base_x + (motion_factor - 0.5) * 2 * amp_x
-                new_y = base_y
-                new_z = base_z
-            elif self._arm_motion_pattern[i] == 1:  # Y-axis motion
-                new_x = base_x
-                new_y = base_y + (motion_factor - 0.5) * 2 * amp_y
-                new_z = base_z
-            else:  # Diagonal motion (X-Y plane)
-                new_x = base_x + (motion_factor - 0.5) * 2 * amp_x * 0.7
-                new_y = base_y + (motion_factor - 0.5) * 2 * amp_y * 0.7
-                new_z = base_z
+        # Calculate local positions (before env origin offset)
+        local_x = center_x + amp_x * torch.sin(
+            2 * math.pi * self._freq_x * t + self._phase_offsets_x
+        )
+        local_y = center_y + amp_y * torch.sin(
+            2 * math.pi * self._freq_y * t + self._phase_offsets_y
+        )
+        local_z = center_z + amp_z * torch.sin(
+            2 * math.pi * self._freq_z * t + self._phase_offsets_z
+        )
 
-            # Update position in world frame
-            local_pos = torch.tensor([new_x, new_y, new_z], device=self.device)
-            arm_positions[i, :3] = local_pos + self.scene.env_origins[i, :3]
+        local_pos = torch.stack([local_x, local_y, local_z], dim=-1)
 
-        # Apply new poses (keep original orientation)
+        # Apply environment origin offsets
+        arm_positions[:, :3] = local_pos + self.scene.env_origins[:, :3]
+
+        # Apply new poses with fixed orientation quaternion (w, x, y, z)
+        fixed_quat = torch.tensor([0.0, 0.99144, -0.0, -0.13053], device=self.device)
+        fixed_quat = fixed_quat / torch.norm(fixed_quat)  # normalize
+        arm_quats = fixed_quat.unsqueeze(0).expand(self.num_envs, -1)
         self._arm.write_root_pose_to_sim(torch.cat([arm_positions, arm_quats], dim=-1))
 
-        # Calculate and set velocities for smooth physics
+        # Calculate and set velocities (derivatives of the sine waves)
         if self.cfg.arm_movement_speed > 0:
             velocities = torch.zeros((self.num_envs, 6), device=self.device)
+            # Velocity = Amplitude * 2*pi*Freq * cos(2*pi*Freq*t + phase)
+            vel_x = (
+                amp_x
+                * 2
+                * math.pi
+                * self._freq_x
+                * torch.cos(2 * math.pi * self._freq_x * t + self._phase_offsets_x)
+            )
+            vel_y = (
+                amp_y
+                * 2
+                * math.pi
+                * self._freq_y
+                * torch.cos(2 * math.pi * self._freq_y * t + self._phase_offsets_y)
+            )
+            vel_z = (
+                amp_z
+                * 2
+                * math.pi
+                * self._freq_z
+                * torch.cos(2 * math.pi * self._freq_z * t + self._phase_offsets_z)
+            )
 
-            for i in range(self.num_envs):
-                # Calculate velocity based on motion pattern and phase
-                period = 4.0
-                phase = (self._arm_motion_time[i] % period) / period
-
-                # Velocity direction changes at phase 0.5
-                direction = 1.0 if phase < 0.5 else -1.0
-
-                if self._arm_motion_pattern[i] == 0:  # X-axis
-                    velocities[i, 0] = direction * self.cfg.arm_movement_speed
-                elif self._arm_motion_pattern[i] == 1:  # Y-axis
-                    velocities[i, 1] = direction * self.cfg.arm_movement_speed
-                else:  # Diagonal
-                    velocities[i, 0] = direction * self.cfg.arm_movement_speed * 0.7
-                    velocities[i, 1] = direction * self.cfg.arm_movement_speed * 0.7
-
+            velocities[:, :3] = torch.stack([vel_x, vel_y, vel_z], dim=-1)
             self._arm.write_root_velocity_to_sim(velocities)
         else:
             self._arm.write_root_velocity_to_sim(
@@ -897,7 +991,7 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
         # Get camera observations
         camera_obs = self._get_camera_observations()
-        self._log_rollout_batch(state_obs, camera_obs)
+        self._log_rgbd_rollout_batch(state_obs)
 
         obs = {"image": camera_obs, "state": state_obs}
         observations = {"policy": obs}
@@ -917,7 +1011,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             joint_pos_noisy = joint_pos + joint_pos_noise
         else:
             joint_pos_noisy = joint_pos
-        joint_pos_obs = self._joint_targets_to_policy_actions(joint_pos_noisy)
 
         # Get joint velocities with noise
         # joint_vel = self._robot.data.joint_vel[:, self._joint_indices]
@@ -935,7 +1028,7 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         # Concatenate all state observations
         state_obs = torch.cat(
             [
-                joint_pos_obs,  # 6 dims, normalized to match action coordinates
+                joint_pos_noisy,  # 6 dims
                 # joint_vel_noisy,      # 6 dims
                 target_pose,  # 7 dims
             ],
@@ -952,12 +1045,13 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
         # Get data for specified environment
+        # raw_image is a dict/tensor depending on how we call it. Assuming it's the RGB one for now for vis.
         raw_env = raw_image[env_id].cpu().numpy()
-        processed_env = processed_image[env_id].cpu().numpy()
+        processed_env = processed_image[env_id].cpu().numpy()  # (2, H, W)
 
-        # Raw image
+        # Raw image (Gray) - Displaying channel 0 of RGB input for simplicity
         axes[0].imshow(raw_env)
-        axes[0].set_title(f"Raw Camera Image (224x224)\nEnv {env_id}")
+        axes[0].set_title(f"Raw RGB (Env {env_id})")
         axes[0].axis("off")
 
         # Add crop region visualization on raw image
@@ -970,49 +1064,20 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             facecolor="none",
         )
         axes[0].add_patch(crop_rect)
-        axes[0].text(
-            5, self.cfg.camera_crop_top - 5, "Crop Region", color="red", fontsize=10
-        )
 
-        # Processed image (CHW to HWC for visualization)
-        processed_vis = processed_env.transpose(1, 2, 0)
-
-        # Show normalized image
-        axes[1].imshow(processed_vis + 0.5)  # Add 0.5 since we subtracted mean
+        # Processed image (Combine channels for VIS or just show Gray)
+        # Show Gray channel
+        # processed_env is (2, H, W).
+        axes[1].imshow(processed_env[0], cmap="gray")
         axes[1].set_title(
-            f"Processed & Resized\n({self.cfg.camera_target_height}x{self.cfg.camera_target_width})"
+            f"Processed Gray\n({self.cfg.camera_target_height}x{self.cfg.camera_target_width})"
         )
         axes[1].axis("off")
 
-        # Show channel statistics
+        # Show Depth channel
+        axes[2].imshow(processed_env[1], cmap="viridis")
+        axes[2].set_title(f"Processed Depth")
         axes[2].axis("off")
-        stats_text = f"Processed Image Statistics (Env {env_id}):\n\n"
-        stats_text += f"Shape: {processed_env.shape}\n"
-        stats_text += f"Min value: {processed_env.min():.3f}\n"
-        stats_text += f"Max value: {processed_env.max():.3f}\n"
-        stats_text += f"Mean value: {processed_env.mean():.3f}\n"
-        stats_text += f"Std value: {processed_env.std():.3f}\n\n"
-
-        # Add current state info
-        ee_pos = self._ee_frame.data.target_pos_w[env_id, 0, :].cpu().numpy()
-        target_pos = self._target_poses[env_id, :3].cpu().numpy()
-        arm_pos = self._arm.data.root_pos_w[env_id, :3].cpu().numpy()
-
-        stats_text += (
-            f"End-effector pos: [{ee_pos[0]:.3f}, {ee_pos[1]:.3f}, {ee_pos[2]:.3f}]\n"
-        )
-        stats_text += f"Target pos: [{target_pos[0]:.3f}, {target_pos[1]:.3f}, {target_pos[2]:.3f}]\n"
-        stats_text += f"Arm obstacle pos: [{arm_pos[0]:.3f}, {arm_pos[1]:.3f}, {arm_pos[2]:.3f}]\n"
-
-        axes[2].text(
-            0.1,
-            0.5,
-            stats_text,
-            transform=axes[2].transAxes,
-            fontsize=11,
-            verticalalignment="center",
-            family="monospace",
-        )
 
         plt.tight_layout()
 
@@ -1025,43 +1090,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             print(f"[VIS] Saved camera observation to: {filename}")
 
         self._vis_counter += 1
-
-    def _get_camera_observations(self) -> torch.Tensor:
-        """Get and preprocess camera observations."""
-        # Get camera data
-        camera_data = (
-            self._tiled_camera.data.output["rgb"] / 255.0
-        )  # Shape: (num_envs, H, W, C)
-
-        # Store raw image for visualization
-        raw_camera_data = camera_data.clone()
-
-        # Mean subtraction for normalization
-        mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
-        camera_data = camera_data - mean_tensor
-
-        # Crop image (top and bottom)
-        cropped = camera_data[
-            :, self.cfg.camera_crop_top : -self.cfg.camera_crop_bottom, :, :
-        ]
-
-        # Resize to target size using interpolation
-        # Convert to NCHW format for processing
-        cropped = cropped.permute(0, 3, 1, 2)  # (N, C, H, W)
-
-        # Resize using torch interpolation
-        resized = torch.nn.functional.interpolate(
-            cropped,
-            size=(self.cfg.camera_target_height, self.cfg.camera_target_width),
-            mode="bilinear",
-            align_corners=False,
-        )
-
-        # Visualize camera observation periodically
-        if self.common_step_counter % self.cfg.visualize_camera_interval == 0:
-            self._visualize_camera_observation(raw_camera_data, resized, env_id=0)
-
-        return resized
 
     def _huber_loss(self, x: torch.Tensor, delta: float) -> torch.Tensor:
         """Compute Huber loss for robust distance penalty."""
@@ -1142,17 +1170,8 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         orientation_reward = self.cfg.reward_orientation_weight * orientation_huber_loss
         traditional_rewards += orientation_reward
 
-        # # 4. Joint torque penalty
-        if (
-            hasattr(self._robot.data, "applied_torque")
-            and self._robot.data.applied_torque is not None
-        ):
-            joint_torques = self._robot.data.applied_torque[:, self._joint_indices]
-            torque_penalty = torch.sum(torch.square(joint_torques), dim=1)
-            torque_reward = self.cfg.reward_torque_weight * torque_penalty
-            rewards += torque_reward
-        else:
-            torque_reward = torch.zeros_like(rewards)
+        # 4. Joint torque penalty - Removed
+        # torque_reward removed from calculation
 
         # 5. Table collision penalty
         ee_height = ee_position[:, 2]
@@ -1171,6 +1190,21 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             self._compute_arm_avoidance_rewards() * self.cfg.reward_arm_avoidance_weight
         )
         traditional_rewards += arm_reward
+
+        # 7. Action Rate Penalty (Smoothness)
+        # Penalize large changes in action between steps
+        # Use simple difference norm
+        if hasattr(self, "previous_actions"):
+            # Use raw unscaled actions for penalty calculation to be scale-invariant relative to policy output
+            # current_actions = self.actions / self.cfg.action_scale # Reconstruct or use stored?
+            # Actually, self.actions IS scaled now. Let's compare scaled actions or unscaled?
+            # Typically unscaled is better for policy smoothness, but scaled is better for physical smoothness.
+            # Using scaled actions (actual command change)
+            action_diff = self.actions - self.previous_actions
+            action_rate_penalty = torch.sum(action_diff**2, dim=-1)
+            traditional_rewards += (
+                action_rate_penalty * self.cfg.reward_action_rate_weight
+            )
 
         # 7 Success for reaching the end goal and avoiding the arm
         # Calculate minimum distance from end effector to arm cuboid
@@ -1466,13 +1500,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
             # Update target to prevent immediate re-collision
             self._robot_dof_targets[env_id] = joint_pos
-            self.actions[env_id] = joint_pos
-            normalized_joint_pos = self._joint_targets_to_policy_actions(joint_pos)
-            self.policy_actions[env_id] = normalized_joint_pos
-            self._action_filter_x1[env_id] = normalized_joint_pos
-            self._action_filter_x2[env_id] = normalized_joint_pos
-            self._action_filter_y1[env_id] = normalized_joint_pos
-            self._action_filter_y2[env_id] = normalized_joint_pos
 
             # Log the reset
             if len(stuck_env_ids) <= 2:  # Avoid spam
@@ -1570,14 +1597,31 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             )
         joint_vel = torch.zeros_like(joint_pos)
 
+        completed_attacked_episodes = 0
+        if (
+            self.cfg.replay_attack_enabled
+            and self._replay_attack_was_active is not None
+        ):
+            completed_attacked_episodes = int(
+                torch.count_nonzero(self._replay_attack_was_active[env_ids]).item()
+            )
+
         # Set joint state
         self._robot.write_joint_state_to_sim(
             joint_pos, joint_vel, joint_ids=self._joint_indices, env_ids=env_ids
         )
         self._robot_dof_targets[env_ids] = joint_pos
-        self.actions[env_ids] = joint_pos
-        normalized_joint_pos = self._joint_targets_to_policy_actions(joint_pos)
-        self.policy_actions[env_ids] = normalized_joint_pos
+        self.raw_actions[env_ids] = 0.0
+        self.actions[env_ids] = 0.0
+        self.base_actions[env_ids] = 0.0
+        self.sampled_watermarks[env_ids] = 0.0
+        self.effective_action_deltas[env_ids] = 0.0
+        if self._replay_attack_was_active is not None:
+            self._replay_attack_was_active[env_ids] = False
+        self._replay_attack_source_env_ids[env_ids] = -1
+        self._replay_attack_source_start_slots[env_ids] = -1
+        self._replay_attack_start_steps[env_ids] = -1
+        self._replay_attack_match_distances[env_ids] = float("inf")
 
         # Reset arm position and orientation targets
         for i, env_id in enumerate(env_ids):
@@ -1630,14 +1674,13 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         # Reset target poses
         self._sample_target_poses_for_reset(env_ids)
 
-        # Reset action filter states
-        self._action_filter_x1[env_ids] = normalized_joint_pos
-        self._action_filter_x2[env_ids] = normalized_joint_pos
-        self._action_filter_y1[env_ids] = normalized_joint_pos
-        self._action_filter_y2[env_ids] = normalized_joint_pos
+        # Reset previous actions for smoothness penalty
+        if hasattr(self, "previous_actions"):
+            self.previous_actions[env_ids] = 0.0
 
         # Reset timers
         self._command_time_left[env_ids] = self.cfg.command_resampling_time
+
         if self._rollout_episode_ids is not None:
             episode_ids = torch.arange(
                 self._next_rollout_episode_id,
@@ -1647,6 +1690,87 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             )
             self._rollout_episode_ids[env_ids] = episode_ids
             self._next_rollout_episode_id += num_resets
+
+        self._record_completed_rgbd_rollout_episodes(
+            num_resets, completed_attacked_episodes
+        )
+
+    def _record_completed_rgbd_rollout_episodes(
+        self, num_completed: int, num_attacked_completed: int
+    ) -> None:
+        """Stop collection after the configured number of completed episodes."""
+        if not self.cfg.save_rgbd_rollouts or self._rollout_logger is None:
+            return
+        if self._rgbd_rollout_shutdown_requested:
+            return
+
+        max_episodes = int(self.cfg.max_rgbd_rollout_episodes)
+        if max_episodes <= 0:
+            return
+
+        self._rgbd_rollout_completed_episodes += int(num_completed)
+        self._rgbd_rollout_completed_attacked_episodes += int(num_attacked_completed)
+
+        if self.cfg.replay_attack_enabled:
+            completed_for_limit = self._rgbd_rollout_completed_attacked_episodes
+            if (
+                completed_for_limit == 0
+                and self._rgbd_rollout_completed_episodes >= max_episodes
+                and not self._rgbd_rollout_waiting_for_attacks_printed
+            ):
+                self._rgbd_rollout_waiting_for_attacks_printed = True
+                print(
+                    "[INFO] RGBD replay collection has completed "
+                    f"{self._rgbd_rollout_completed_episodes} source episodes, "
+                    "but no replay-attacked episode has finished yet. "
+                    "Continuing until matched replay attacks are collected."
+                )
+        else:
+            completed_for_limit = self._rgbd_rollout_completed_episodes
+
+        if completed_for_limit < max_episodes:
+            return
+
+        self._request_rgbd_rollout_shutdown(max_episodes, completed_for_limit)
+
+    def _request_rgbd_rollout_shutdown(
+        self, max_episodes: int, completed_for_limit: int
+    ) -> None:
+        """Flush rollout data and request a clean Isaac Lab app shutdown."""
+        self._rgbd_rollout_shutdown_requested = True
+        episode_kind = (
+            "replay-attacked episodes" if self.cfg.replay_attack_enabled else "episodes"
+        )
+        print(
+            "[INFO] RGBD rollout episode limit reached: "
+            f"{int(completed_for_limit)}/{int(max_episodes)} completed "
+            f"{episode_kind} across all parallel environments "
+            f"({self._rgbd_rollout_completed_episodes} total episodes). "
+            "Flushing rollout data and shutting down Isaac Lab."
+        )
+
+        if self._rollout_logger is not None:
+            self._rollout_logger.close()
+            self._rollout_logger = None
+
+        try:
+            app = None
+            import omni.kit.app
+
+            app = omni.kit.app.get_app()
+            if app is not None:
+                app.post_quit()
+        except Exception as exc:
+            print(f"[WARN] Could not request Isaac Kit app quit: {exc}")
+
+        sim = getattr(self, "sim", None)
+        if sim is not None and hasattr(sim, "stop"):
+            try:
+                sim.stop()
+            except Exception as exc:
+                print(f"[WARN] Could not stop simulation context: {exc}")
+
+        raise SystemExit(0)
 
     def _sample_target_poses_for_reset(self, env_ids: Sequence[int]):
         """Sample new target poses for reset environments."""
@@ -1689,12 +1813,303 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         self._target_poses[env_ids, :3] = torch.stack([x, y, z], dim=-1)
         self._target_poses[env_ids, 3:7] = target_quat
 
-    def _log_rollout_batch(
-        self, state_obs: torch.Tensor, camera_obs: torch.Tensor
+    def _init_replay_attack_buffers(self) -> None:
+        """Allocate replay source buffers when live replay attacks are enabled."""
+        if not self.cfg.replay_attack_enabled:
+            return
+
+        capacity = int(self.cfg.replay_attack_buffer_capacity)
+        if capacity <= 0:
+            raise ValueError("replay_attack_buffer_capacity must be positive")
+
+        height = int(self.cfg.camera_target_height)
+        width = int(self.cfg.camera_target_width)
+        self._replay_policy_image_buffer = torch.zeros(
+            (self.num_envs, capacity, 2, height, width),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        self._replay_rgbd_buffer = torch.zeros(
+            (self.num_envs, capacity, 4, height, width),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        self._replay_state_buffer = torch.zeros(
+            (self.num_envs, capacity, 9), device=self.device, dtype=torch.float32
+        )
+        self._replay_episode_id_buffer = torch.full(
+            (self.num_envs, capacity), -1, device=self.device, dtype=torch.int64
+        )
+        self._replay_step_id_buffer = torch.full_like(
+            self._replay_episode_id_buffer, -1
+        )
+        self._replay_env_id_buffer = (
+            torch.arange(self.num_envs, device=self.device, dtype=torch.int64)
+            .unsqueeze(1)
+            .repeat(1, capacity)
+        )
+        self._replay_buffer_write_idx = 0
+        self._replay_buffer_count = 0
+
+    def _get_replay_match_states(self) -> torch.Tensor:
+        """Return robot joint positions plus env-relative human arm position."""
+        joint_pos = self._robot.data.joint_pos[:, self._joint_indices]
+        arm_pos = self._arm.data.root_pos_w[:, :3] - self.scene.env_origins[:, :3]
+        return torch.cat([joint_pos, arm_pos], dim=-1).detach()
+
+    def _apply_replay_attack(
+        self, policy_images: torch.Tensor, rgbd_images: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return policy/RGB-D observations after optional live replay spoofing."""
+        self._latest_true_rgbd_obs = rgbd_images.detach()
+
+        self._latest_attack_active.zero_()
+        self._latest_attack_trigger.zero_()
+        self._latest_attack_source_episode_index.fill_(-1)
+        self._latest_attack_source_step_index.fill_(-1)
+        self._latest_attack_source_env_id.fill_(-1)
+        self._latest_attack_match_distance.fill_(float("inf"))
+
+        if not self.cfg.replay_attack_enabled:
+            self._latest_rgbd_obs = rgbd_images.detach()
+            return policy_images, rgbd_images
+
+        if self._replay_policy_image_buffer is None:
+            self._init_replay_attack_buffers()
+
+        capacity = int(self.cfg.replay_attack_buffer_capacity)
+        current_states = self._get_replay_match_states()
+        can_replay = (
+            self._replay_buffer_count >= capacity
+            and self.common_step_counter >= int(self.cfg.replay_attack_warmup_steps)
+        )
+        local_step_ids = self.episode_length_buf.to(torch.int64)
+        eligible_envs = (
+            local_step_ids >= int(self.cfg.replay_attack_trigger_step)
+        ) & bool(can_replay)
+
+        newly_matched_env_ids = torch.nonzero(
+            eligible_envs & ~self._replay_attack_was_active, as_tuple=False
+        ).squeeze(-1)
+        if newly_matched_env_ids.numel() > 0:
+            self._select_replay_attack_sources(
+                newly_matched_env_ids, current_states[newly_matched_env_ids]
+            )
+
+        has_source = self._replay_attack_source_env_ids >= 0
+        attack_active = eligible_envs & has_source
+
+        attacked_policy_images = policy_images
+        attacked_rgbd_images = rgbd_images
+        if torch.any(attack_active):
+            active_env_ids = torch.nonzero(attack_active, as_tuple=False).squeeze(-1)
+            source_env_ids = self._replay_attack_source_env_ids[active_env_ids]
+            attack_offsets = (
+                local_step_ids[active_env_ids]
+                - self._replay_attack_start_steps[active_env_ids]
+            )
+            source_slots = (
+                self._replay_attack_source_start_slots[active_env_ids] + attack_offsets
+            ) % capacity
+
+            attacked_policy_images = policy_images.clone()
+            attacked_rgbd_images = rgbd_images.clone()
+            attacked_policy_images[active_env_ids] = self._replay_policy_image_buffer[
+                source_env_ids, source_slots
+            ]
+            attacked_rgbd_images[active_env_ids] = self._replay_rgbd_buffer[
+                source_env_ids, source_slots
+            ]
+            self._latest_attack_source_episode_index[active_env_ids] = (
+                self._replay_episode_id_buffer[source_env_ids, source_slots]
+            )
+            self._latest_attack_source_step_index[active_env_ids] = (
+                self._replay_step_id_buffer[source_env_ids, source_slots]
+            )
+            self._latest_attack_source_env_id[active_env_ids] = (
+                self._replay_env_id_buffer[source_env_ids, source_slots]
+            )
+            self._latest_attack_match_distance[active_env_ids] = (
+                self._replay_attack_match_distances[active_env_ids]
+            )
+
+        self._latest_attack_active = attack_active
+        self._latest_attack_trigger = attack_active & ~self._replay_attack_was_active
+        self._replay_attack_was_active = attack_active.clone()
+        self._latest_rgbd_obs = attacked_rgbd_images.detach()
+        if self.cfg.replay_attack_print_start and torch.any(
+            self._latest_attack_trigger
+        ):
+            self._print_replay_attack_start_indicator()
+
+        self._append_replay_attack_buffer(policy_images, rgbd_images)
+        return attacked_policy_images, attacked_rgbd_images
+
+    def _select_replay_attack_sources(
+        self, env_ids: torch.Tensor, current_states: torch.Tensor
     ) -> None:
+        """Choose closest buffered source frames across all parallel environments."""
+        if self._replay_state_buffer is None or env_ids.numel() == 0:
+            return
+
+        source_states = self._replay_state_buffer.reshape(-1, 9)
+        source_episode_ids = self._replay_episode_id_buffer.reshape(-1)
+        source_step_ids = self._replay_step_id_buffer.reshape(-1)
+        source_env_ids = self._replay_env_id_buffer.reshape(-1)
+        source_slots = (
+            torch.arange(
+                int(self.cfg.replay_attack_buffer_capacity),
+                device=self.device,
+                dtype=torch.int64,
+            )
+            .unsqueeze(0)
+            .repeat(self.num_envs, 1)
+            .reshape(-1)
+        )
+
+        scales = torch.tensor(
+            [float(self.cfg.replay_attack_joint_match_scale)] * 6
+            + [float(self.cfg.replay_attack_arm_match_scale)] * 3,
+            device=self.device,
+            dtype=torch.float32,
+        ).clamp_min(1e-6)
+        threshold = float(self.cfg.replay_attack_match_threshold)
+
+        for row, env_id in enumerate(env_ids):
+            current_state = current_states[row]
+            deltas = (source_states - current_state.unsqueeze(0)) / scales
+            distances = torch.linalg.norm(deltas, dim=-1) / math.sqrt(
+                float(source_states.shape[-1])
+            )
+
+            # Avoid starting from the same episode, which can produce a trivial
+            # replay of the current run instead of a stored source trajectory.
+            current_episode_id = self._rollout_episode_ids[env_id]
+            distances = torch.where(
+                source_episode_ids == current_episode_id,
+                torch.full_like(distances, float("inf")),
+                distances,
+            )
+            remaining_episode_steps = int(
+                max(
+                    1,
+                    int(self.max_episode_length)
+                    - int(self.episode_length_buf[env_id].item()),
+                )
+            )
+            available_future_steps = (
+                int(self._replay_buffer_write_idx) - source_slots - 1
+            ) % int(self.cfg.replay_attack_buffer_capacity)
+            has_future_buffer = available_future_steps >= (remaining_episode_steps - 1)
+            has_future_episode = (source_step_ids + remaining_episode_steps) <= int(
+                self.max_episode_length
+            )
+            distances = torch.where(
+                has_future_buffer & has_future_episode,
+                distances,
+                torch.full_like(distances, float("inf")),
+            )
+
+            best_distance, best_index = torch.min(distances, dim=0)
+            if not torch.isfinite(best_distance) or best_distance > threshold:
+                continue
+
+            self._replay_attack_source_env_ids[env_id] = source_env_ids[best_index]
+            self._replay_attack_source_start_slots[env_id] = source_slots[best_index]
+            self._replay_attack_start_steps[env_id] = self.episode_length_buf[env_id]
+            self._replay_attack_match_distances[env_id] = best_distance
+
+    def _print_replay_attack_start_indicator(self) -> None:
+        """Print one terminal line for each env whose replay attack just started."""
+        trigger_env_ids = torch.nonzero(
+            self._latest_attack_trigger, as_tuple=False
+        ).squeeze(-1)
+        max_envs = max(1, int(self.cfg.replay_attack_print_max_envs))
+        shown_env_ids = trigger_env_ids[:max_envs]
+
+        env_ids = shown_env_ids.detach().cpu().tolist()
+        episode_ids = self._rollout_episode_ids[shown_env_ids].detach().cpu().tolist()
+        episode_steps = self.episode_length_buf[shown_env_ids].detach().cpu().tolist()
+        source_env_ids = (
+            self._latest_attack_source_env_id[shown_env_ids].detach().cpu().tolist()
+        )
+        source_episode_ids = (
+            self._latest_attack_source_episode_index[shown_env_ids]
+            .detach()
+            .cpu()
+            .tolist()
+        )
+        source_step_ids = (
+            self._latest_attack_source_step_index[shown_env_ids].detach().cpu().tolist()
+        )
+        match_distances = (
+            self._latest_attack_match_distance[shown_env_ids].detach().cpu().tolist()
+        )
+
+        for (
+            env_id,
+            episode_id,
+            episode_step,
+            source_env_id,
+            source_episode_id,
+            source_step_id,
+            match_distance,
+        ) in zip(
+            env_ids,
+            episode_ids,
+            episode_steps,
+            source_env_ids,
+            source_episode_ids,
+            source_step_ids,
+            match_distances,
+        ):
+            print(
+                "[REPLAY ATTACK START] "
+                f"global_step={int(self.common_step_counter)} | "
+                f"env={int(env_id)} | "
+                f"episode_id={int(episode_id)} | "
+                f"episode_step={int(episode_step)} | "
+                f"source_env={int(source_env_id)} | "
+                f"source_episode_id={int(source_episode_id)} | "
+                f"source_step={int(source_step_id)} | "
+                f"match_distance={float(match_distance):.4f}"
+            )
+
+        omitted = int(trigger_env_ids.numel()) - len(env_ids)
+        if omitted > 0:
+            print(
+                "[REPLAY ATTACK START] "
+                f"{omitted} additional envs triggered at "
+                f"global_step={int(self.common_step_counter)}"
+            )
+
+    def _append_replay_attack_buffer(
+        self, policy_images: torch.Tensor, rgbd_images: torch.Tensor
+    ) -> None:
+        """Store live camera observations as future replay-attack sources."""
+        if self._replay_policy_image_buffer is None:
+            return
+
+        slot = self._replay_buffer_write_idx
+        self._replay_policy_image_buffer[:, slot] = policy_images.detach()
+        self._replay_rgbd_buffer[:, slot] = rgbd_images.detach()
+        self._replay_state_buffer[:, slot] = self._get_replay_match_states()
+        self._replay_episode_id_buffer[:, slot] = self._rollout_episode_ids
+        self._replay_step_id_buffer[:, slot] = self.episode_length_buf.to(torch.int64)
+        self._replay_buffer_write_idx = (slot + 1) % int(
+            self.cfg.replay_attack_buffer_capacity
+        )
+        self._replay_buffer_count = min(
+            self._replay_buffer_count + 1, int(self.cfg.replay_attack_buffer_capacity)
+        )
+
+    def _log_rgbd_rollout_batch(self, state_obs: torch.Tensor) -> None:
+        """Append synchronized image, proprioception, and action samples to HDF5."""
         if self._rollout_logger is None:
             return
-        if self.common_step_counter % max(1, int(self.cfg.rollout_log_stride)) != 0:
+        if self.common_step_counter % max(1, int(self.cfg.rgbd_rollout_stride)) != 0:
+            return
+        if not hasattr(self, "_latest_rgbd_obs"):
             return
 
         joint_pos = self._robot.data.joint_pos[:, self._joint_indices]
@@ -1707,12 +2122,23 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             robot_pos, robot_quat, ee_pos_w, ee_quat_w
         )
         ee_pose = torch.cat([ee_pos_b, ee_quat_b], dim=-1)
+        proprio_obs = torch.cat([joint_pos, joint_vel, ee_pose], dim=-1)
+        arm_pose = torch.cat(
+            [self._arm.data.root_pos_w[:, :3], self._arm.data.root_quat_w], dim=-1
+        )
 
-        self._rollout_logger.append_batch(
+        rollout_batch = dict(
+            rgbd_images=self._latest_rgbd_obs.detach().cpu().numpy().astype(np.float32),
             states=state_obs.detach().cpu().numpy().astype(np.float32),
-            images=camera_obs.detach().cpu().numpy().astype(np.float32),
-            base_actions=self.actions.detach().cpu().numpy().astype(np.float32),
-            policy_actions=self.policy_actions.detach()
+            proprio_observations=proprio_obs.detach().cpu().numpy().astype(np.float32),
+            raw_actions=self.raw_actions.detach().cpu().numpy().astype(np.float32),
+            base_actions=self.base_actions.detach().cpu().numpy().astype(np.float32),
+            scaled_actions=self.actions.detach().cpu().numpy().astype(np.float32),
+            sampled_watermarks=self.sampled_watermarks.detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32),
+            effective_action_deltas=self.effective_action_deltas.detach()
             .cpu()
             .numpy()
             .astype(np.float32),
@@ -1724,13 +2150,49 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             .astype(np.float32),
             ee_poses=ee_pose.detach().cpu().numpy().astype(np.float32),
             target_poses=self._target_poses.detach().cpu().numpy().astype(np.float32),
+            arm_poses=arm_pose.detach().cpu().numpy().astype(np.float32),
             episode_ids=self._rollout_episode_ids.detach()
             .cpu()
             .numpy()
             .astype(np.int64),
             step_ids=self.episode_length_buf.detach().cpu().numpy().astype(np.int64),
+            global_step_ids=np.full(
+                self.num_envs, self.common_step_counter, dtype=np.int64
+            ),
             env_ids=np.arange(self.num_envs, dtype=np.int64),
         )
+        if self.cfg.replay_attack_enabled:
+            rollout_batch.update(
+                true_rgbd_images=self._latest_true_rgbd_obs.detach()
+                .cpu()
+                .numpy()
+                .astype(np.float32),
+                attack_active=self._latest_attack_active.detach()
+                .cpu()
+                .numpy()
+                .astype(np.bool_),
+                attack_trigger=self._latest_attack_trigger.detach()
+                .cpu()
+                .numpy()
+                .astype(np.bool_),
+                attack_source_episode_index=self._latest_attack_source_episode_index.detach()
+                .cpu()
+                .numpy()
+                .astype(np.int64),
+                attack_source_step_index=self._latest_attack_source_step_index.detach()
+                .cpu()
+                .numpy()
+                .astype(np.int64),
+                attack_source_env_id=self._latest_attack_source_env_id.detach()
+                .cpu()
+                .numpy()
+                .astype(np.int64),
+                attack_match_distance=self._latest_attack_match_distance.detach()
+                .cpu()
+                .numpy()
+                .astype(np.float32),
+            )
+        self._rollout_logger.append_batch(**rollout_batch)
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         # Create markers for visualizing the goal poses
@@ -1817,31 +2279,235 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             self._state_obs_file.flush()
 
     # -------------------------------------------------------------------------
-    # 3) SAVE IMAGE OBSERVATIONS
+    # 3) SAVE AGAN DATA (IMAGES + METADATA)
     # -------------------------------------------------------------------------
-    def _save_image_observations(self):
-        """Save the processed camera observations (normalized, cropped, resized) as PNGs."""
-        # Lazily create output directory
-        if self._image_obs_dir is None:
-            self._image_obs_dir = "./image_data"
-            os.makedirs(self._image_obs_dir, exist_ok=True)
+    def _world_to_screen(
+        self, points_3d, camera_pos, camera_quat, intrinsics, width, height
+    ):
+        """
+        Project 3D points to 2D screen coordinates.
+        points_3d: (N, 3) tensor
+        camera_pos: (3,) tensor
+        camera_quat: (4,) tensor (w, x, y, z)
+        intrinsics: (3, 3) tensor
+        """
+        # Transform to camera frame
+        # R_cw = R_wc^T
+        rot_mat = math_utils.matrix_from_quat(camera_quat)
+        points_cam = torch.matmul(points_3d - camera_pos, rot_mat.T)
 
-        step = self.common_step_counter
-        # 1) Grab the processed tensor: shape (num_envs, C, H, W)
-        processed = self._get_camera_observations().cpu().numpy()
+        # Convert OpenGL (Isaac) to OpenCV (Pinhole) convention
+        # OpenGL: -Z forward, +Y up
+        # OpenCV: +Z forward, +Y down
+        # x_cv = x_gl, y_cv = -y_gl, z_cv = -z_gl
+        points_cam = points_cam * torch.tensor(
+            [1.0, -1.0, -1.0], device=points_cam.device
+        )
 
-        # 2) For each env, convert to H×W×C and shift back into [0,1] for saving
-        for env_id in range(self.num_envs):
-            proc = processed[env_id].transpose(1, 2, 0)  #  (H, W, C)
-            vis = np.clip(proc + 0.5, 0.0, 1.0)  # undo mean subtraction
-            fname = f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}.png"
-            path = os.path.join(self._image_obs_dir, fname)
-            plt.imsave(path, vis)
+        # Project to image plane: p_pix = K * (P_cam / P_cam_z)
+        # Handle division by zero
+        depths = points_cam[:, 2].clone()
+        depths[depths < 1e-5] = 1e-5
 
-        if step % 10 == 0:
-            print(
-                f"[SAVE] Processed images saved to {self._image_obs_dir} at step {step}"
+        points_2d_homo = torch.matmul(points_cam, intrinsics.T)
+        u = points_2d_homo[:, 0] / depths
+        v = points_2d_homo[:, 1] / depths
+
+        return torch.stack([u, v], dim=1)
+
+    def _get_camera_observations(self) -> torch.Tensor:
+        """Get and preprocess camera observations."""
+        # 1. Get Grayscale Data (from RGB)
+        rgb_data = (
+            self._tiled_camera_gray.data.output["rgb"][..., :3] / 255.0
+        )  # (N, H, W, 3)
+        # Convert to grayscale by averaging channels
+        gray_data = torch.mean(rgb_data, dim=-1, keepdim=True)  # (N, H, W, 1)
+
+        # 2. Get Depth Data
+        depth_data = self._tiled_camera_depth.data.output[
+            "distance_to_image_plane"
+        ]  # (N, H, W, 1)
+
+        # --- Fix for depth stability ---
+        # Replace infinity/nan with max range (e.g. 10.0m)
+        max_depth = float(self.cfg.rgbd_depth_max)
+        depth_data = torch.nan_to_num(
+            depth_data, nan=max_depth, posinf=max_depth, neginf=0.0
+        )
+        depth_data = torch.clamp(depth_data, 0.0, max_depth)
+
+        # Normalize depth to [0, 1] range roughly to match grayscale intensity distribution
+        depth_data = depth_data / max_depth
+
+        # 3. Concatenate
+        combined_data = torch.cat([gray_data, depth_data], dim=-1)  # (N, H, W, 2)
+        rgbd_data = torch.cat([rgb_data, depth_data], dim=-1)  # (N, H, W, 4)
+
+        # Store raw RGB for visualization (optional)
+        raw_camera_data = rgb_data.clone()
+
+        # 4. Mean subtraction (Center the data)
+        mean_tensor = torch.mean(combined_data, dim=(1, 2), keepdim=True)
+        combined_data = combined_data - mean_tensor
+
+        # 5. Crop image (top and bottom)
+        cropped = combined_data[
+            :, self.cfg.camera_crop_top : -self.cfg.camera_crop_bottom, :, :
+        ]
+
+        # 6. Resize
+        # Convert to NCHW for interpolation
+        cropped = cropped.permute(0, 3, 1, 2)  # (N, 2, H, W)
+
+        # Resize using torch interpolation
+        resized = torch.nn.functional.interpolate(
+            cropped,
+            size=(self.cfg.camera_target_height, self.cfg.camera_target_width),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        rgbd_cropped = rgbd_data[
+            :, self.cfg.camera_crop_top : -self.cfg.camera_crop_bottom, :, :
+        ].permute(0, 3, 1, 2)
+        rgbd_resized = torch.nn.functional.interpolate(
+            rgbd_cropped,
+            size=(self.cfg.camera_target_height, self.cfg.camera_target_width),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        resized, _ = self._apply_replay_attack(resized, rgbd_resized)
+
+        # Visualize camera observation periodically
+        if self.common_step_counter % self.cfg.visualize_camera_interval == 0:
+            self._visualize_camera_observation(raw_camera_data, resized, env_id=0)
+
+        # --- AGAN Data Saving (Integrated) ---
+        if self.cfg.save_agan_images and (
+            self.common_step_counter % self.cfg.agan_save_interval == 0
+        ):
+            # Ensure directory exists
+            if self._image_obs_dir is None:
+                self._image_obs_dir = os.path.join(
+                    self.cfg.agan_data_dir, f"run_{self._episode_counter}"
+                )
+                os.makedirs(self._image_obs_dir, exist_ok=True)
+
+            step = self.common_step_counter
+            processed_np = resized.cpu().numpy()
+            metadata = {}
+
+            # Arm BBox Prep
+            half_dims = torch.tensor(self.cfg.arm_approx_dims, device=self.device) * 0.5
+            corners_local = (
+                torch.tensor(
+                    list(itertools.product([-1, 1], repeat=3)), device=self.device
+                )
+                * half_dims
             )
+
+            # Original dimensions for BBox projection (before crop/resize)
+            orig_width = self.cfg.tiled_camera_gray.width
+            orig_height = self.cfg.tiled_camera_gray.height
+
+            for env_id in range(self.num_envs):
+                # Save Images
+                # Env data: (C, H, W) -> (H, W, C)
+                env_data = processed_np[env_id].transpose(1, 2, 0)
+
+                # Undo mean subtraction (add 0.5) and clip
+                vis_data = np.clip(env_data + 0.5, 0.0, 1.0)
+
+                gray_img = (vis_data[..., 0] * 255).astype(np.uint8)
+                depth_img = (vis_data[..., 1] * 255).astype(np.uint8)
+
+                # File names
+                prefix = f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}"
+                gray_path = os.path.join(self._image_obs_dir, f"{prefix}_gray.png")
+                depth_path = os.path.join(self._image_obs_dir, f"{prefix}_depth.png")
+
+                Image.fromarray(gray_img).save(gray_path)
+                Image.fromarray(depth_img).save(depth_path)
+
+                # Calculate BBox
+                # 3D -> 2D (Original)
+                arm_pos = self._arm.data.root_pos_w[env_id]
+                arm_quat = self._arm.data.root_quat_w[env_id]
+                rot_mat_arm = math_utils.matrix_from_quat(arm_quat)
+                corners_world = torch.matmul(corners_local, rot_mat_arm.T) + arm_pos
+
+                cam_pos = self._tiled_camera_gray.data.pos_w[env_id]
+                cam_quat = self._tiled_camera_gray.data.quat_w_world[env_id]
+                intrinsics = self._tiled_camera_gray.data.intrinsic_matrices[env_id]
+
+                pts_2d = self._world_to_screen(
+                    corners_world,
+                    cam_pos,
+                    cam_quat,
+                    intrinsics,
+                    orig_width,
+                    orig_height,
+                )
+
+                # Adjust for Crop and Resize
+                pts_2d[:, 1] -= self.cfg.camera_crop_top
+
+                crop_h = (
+                    orig_height - self.cfg.camera_crop_top - self.cfg.camera_crop_bottom
+                )
+                crop_w = orig_width
+
+                scale_y = self.cfg.camera_target_height / crop_h
+                scale_x = self.cfg.camera_target_width / crop_w
+
+                pts_2d[:, 0] *= scale_x
+                pts_2d[:, 1] *= scale_y
+
+                # Bounds
+                u_min = pts_2d[:, 0].min().item()
+                u_max = pts_2d[:, 0].max().item()
+                v_min = pts_2d[:, 1].min().item()
+                v_max = pts_2d[:, 1].max().item()
+
+                # Clamp
+                u_min = max(0, min(self.cfg.camera_target_width, u_min))
+                u_max = max(0, min(self.cfg.camera_target_width, u_max))
+                v_min = max(0, min(self.cfg.camera_target_height, v_min))
+                v_max = max(0, min(self.cfg.camera_target_height, v_max))
+
+                is_valid = (
+                    (u_max > u_min)
+                    and (v_max > v_min)
+                    and (u_max - u_min > 2)
+                    and (v_max - v_min > 2)
+                )
+
+                # Metadata
+                meta_key = os.path.abspath(gray_path)
+                metadata[meta_key] = {
+                    "env": env_id,
+                    "step": step,
+                    "bbox": [u_min, v_min, u_max, v_max],
+                    "success": is_valid,
+                    "arm_pos_3d": arm_pos.cpu().tolist(),
+                    "episode": self._episode_counter,
+                }
+
+            if step % 10 == 0:
+                print(
+                    f"[SAVE] Saved AGAN data (imgs+meta) to {self._image_obs_dir} at step {step}"
+                )
+
+            # Append metadata
+            jsonl_path = os.path.join(self.cfg.agan_data_dir, "metadata.jsonl")
+            with open(jsonl_path, "a") as f:
+                for k, v in metadata.items():
+                    v["image_path"] = k
+                    f.write(json.dumps(v) + "\n")
+
+        return resized
 
     def _debug_vis_callback(self, event):
         """Update debug visualization markers and save joint targets."""
@@ -1863,7 +2529,7 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             translations=des_pos_w, orientations=des_quat_w
         )
 
-        # Calculate and update joint targets (moved outside the conditional block)
+        # Calculate metrics for logging only (do not update targets)
         ee_position = self._ee_frame.data.target_pos_w[..., 0, :]
         arm_half_extents = torch.tensor([0.25, 0.1, 0.06], device=self.device)
         arm_position = self._arm.data.root_pos_w[:, :3]
@@ -1873,12 +2539,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             ee_position, arm_position, arm_quat, arm_half_extents
         )
         beta_values = self._compute_beta_transition(min_distances)
-
-        # self._save_joint_targets()
-
-        # # # new: save state & image
-        # self._save_state_observations()
-        self._save_image_observations()
 
         # Additionally log APF beta values for first few environments (every 10 steps)
         if self.common_step_counter % 10 == 0:
@@ -1971,10 +2631,12 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
 # Factory function for creating the environment
 def create_obj_camera_pose_tracking_env(
-    cfg: ObjCameraPoseTrackingDirectEnvCfg = None, render_mode: str = None, **kwargs
-) -> ObjCameraPoseTrackingDirectEnv:
+    cfg: AGANDataCollectionEnvCfg = None,
+    render_mode: str = None,
+    **kwargs,
+) -> AGANDataCollectionEnv:
     """Factory function to create the environment with default config if none provided."""
     if cfg is None:
-        cfg = ObjCameraPoseTrackingDirectEnvCfg()
+        cfg = AGANDataCollectionEnvCfg()
 
-    return ObjCameraPoseTrackingDirectEnv(cfg, render_mode=render_mode, **kwargs)
+    return AGANDataCollectionEnv(cfg, render_mode=render_mode, **kwargs)

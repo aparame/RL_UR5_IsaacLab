@@ -42,10 +42,13 @@ matplotlib.use("Agg")  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import os
+import json
+from PIL import Image
+import itertools
+
 
 # Robot configuration
 from .assets.ur5 import UR5_GRIPPER_CFG
-from .rollout_logger import RolloutLogger
 
 # Custom utilities - with fallback
 try:
@@ -53,6 +56,10 @@ try:
 except ImportError:
     # Define minimal thresholds if file not found
     TABLE_HEIGHT = 0.72
+    CUBE_HEIGHT = 0.0382
+    CUBE_WIDTH = 0.0286
+    CUBE_LENGTH = 0.0635
+    CUBE_START_HEIGHT = TABLE_HEIGHT + (CUBE_HEIGHT / 2)
     PLACEMENT_POS_THRESHOLD = 0.05
     GRIPPER_OPEN_THRESHOLD = 5.0
     GRIPPER_CLOSED_THRESHOLD = 25.0
@@ -73,11 +80,19 @@ except ImportError:
 
 
 @configclass
-class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
-    """Configuration for the direct RL environment."""
+class ObjCameraGrayDepthPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
+    """Configuration for the direct RL environment with Gray+Depth observations."""
 
     # Visualization settings - MOVED TO TOP to fix reference issue
-    debug_vis = True  # Enable/disable debug visualization
+    debug_vis = False  # Enable/disable debug visualization
+
+    # AGAN Data Collection Switch
+    save_agan_images = False  # Set to True to save images for GAN training
+    agan_data_dir = "agan_dataset"
+    agan_save_interval = 3  # Save every 3rd step (30Hz / 3 = 10Hz)
+
+    # Arm dimensions for BBox approximation (approximate dimensions in meters)
+    arm_approx_dims = [0.2, 0.65, 0.1]  # Width, Length, Depth
 
     marker_cfg = FRAME_MARKER_CFG.copy()
     marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
@@ -92,7 +107,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/table",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/table.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/table.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -109,7 +124,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     arm_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/arm",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/arm.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/arm.usd",
             scale=(0.01, 0.01, 0.01),  # Ensure no scaling
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
@@ -150,7 +165,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     i2r_plane_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/i2r_plane",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/i2r_plane.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/i2r_plane.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -167,7 +182,7 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     clemson_plane_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/clemson_plane",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/clemson_plane.usd",
+            usd_path="/home/adi2440/Desktop/RL_UR5_IsaacLab/source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/assets/clemson_plane.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=True,
@@ -196,49 +211,64 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
         ],
     )
 
-    # Camera
-    tiled_camera: TiledCameraCfg = TiledCameraCfg(
-        prim_path="/World/envs/env_.*/Camera",
-        data_types=["rgb"],  # No depth as requested
+    # Grayscale Camera
+    tiled_camera_gray: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/CameraGray",
+        data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
-            # ZED2 calculated parameters:
-            # fx = fy = 361.63 pixels -> focal_length = 2.955mm
-            # 1/3" CMOS sensor: 5.229 x 2.942 mm
-            focal_length=2.82706,  # Changed from 2.208
-            focus_distance=30.0,  # Keep existing (focus distance for rendering)
-            horizontal_aperture=5.229,  # Changed from 5.76 (ZED2 sensor width)
-            vertical_aperture=2.942,  # Changed from 3.24 (ZED2 sensor height)
-            clipping_range=(0.1, 1000.0),  # Keep existing
+            focal_length=2.82706,
+            focus_distance=30.0,
+            horizontal_aperture=5.229,
+            vertical_aperture=2.942,
+            clipping_range=(0.1, 1000.0),
         ),
-        # ZED2 resolution from camera_info
-        width=640,  # Matches ZED2 exactly
-        height=480,  # Matches ZED2 exactly
-        # Keep your existing camera pose
+        width=640,
+        height=480,
         offset=TiledCameraCfg.OffsetCfg(
-            pos=(1.5, 0.0, 1.143),  # Unchanged
-            rot=(0.59637, 0.37993, 0.37993, 0.59637),  # Unchanged
-            convention="opengl",  # Unchanged
+            pos=(1.5, -0.06, 1.143),
+            rot=(0.59637, 0.37993, 0.37993, 0.59637),
+            convention="opengl",
+        ),
+    )
+
+    # Depth Camera
+    tiled_camera_depth: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/CameraDepth",
+        data_types=["distance_to_image_plane"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=2.82706,
+            focus_distance=30.0,
+            horizontal_aperture=5.229,
+            vertical_aperture=2.942,
+            clipping_range=(0.1, 1000.0),
+        ),
+        width=640,
+        height=480,
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(1.5, -0.06, 1.143),
+            rot=(0.59637, 0.37993, 0.37993, 0.59637),
+            convention="opengl",
         ),
     )
 
     # Basic environment settings
     episode_length_s = 6.0
     decimation = 4
-    action_scale = 0.3  # Kept for backward compatibility; unused for absolute actions
+    action_scale = 0.1  # Reduced for smoother movements
     state_dim = 13
-    camera_target_height = 224
-    camera_target_width = 224
+    camera_target_height = 120
+    camera_target_width = 160
 
     # Observation and action spaces
     action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(6,))
     state_space = 0
-    ## For PPO
+    # For PPO
     observation_space = gym.spaces.Dict(
         {
             "image": gym.spaces.Box(
                 low=float("-inf"),
                 high=float("inf"),
-                shape=(camera_target_height, camera_target_width, 3),
+                shape=(camera_target_height, camera_target_width, 2),
             ),
             "state": gym.spaces.Box(
                 low=float("-inf"), high=float("inf"), shape=(state_dim,)
@@ -310,19 +340,20 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Human arm movement settings
     arm_position_bounds = {
         "x": (0.9, 1.1),
-        "y": (-0.3, 0.3),
+        "y": (-0.5, 0.5),
         "z": (0.7, 1.0),
     }
     arm_movement_speed = 0.3  # Speed of random movement
 
     # Reward settings
-    reward_distance_weight = -1.0
-    reward_distance_tanh_weight = 1.0
+    reward_distance_weight = -2.5
+    reward_distance_tanh_weight = 1.5
     reward_distance_tanh_std = 0.1
-    reward_orientation_weight = -2.0
-    reward_torque_weight = -0.01  # Replaced torque with action penalty
+    reward_orientation_weight = -1.0  # Increased to enforce downward orientation
+    # reward_torque_weight removed
     reward_table_collision_weight = -4.0
-    reward_arm_avoidance_weight = 7.0  # Changed from obstacle
+    reward_arm_avoidance_weight = 5.0  # Changed from obstacle
+    reward_action_rate_weight = -1.0  # Increased penalty for jagged movements
 
     # Artificial Potential Field parameters
     apf_critical_distance = 0.15  # db - critical distance for obstacle avoidance
@@ -332,14 +363,10 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Huber loss parameters
     huber_delta = 0.08  # Delta parameter for Huber loss
 
-    # Absolute joint-target action settings
-    joint_limit_safety_margin = 0.05  # radians
-    max_joint_velocity = 1.5  # rad/s slew-rate limit for commanded targets
-
-    # Action filter settings
-    action_filter_order = 0
-    action_filter_cutoff_freq = 8.0
-    action_filter_damping_ratio = 0.707
+    # Action filter settings - REMOVED
+    # action_filter_order = 2
+    # action_filter_cutoff_freq = 8.0
+    # action_filter_damping_ratio = 0.707
 
     # Termination settings
     position_threshold = 0.01
@@ -351,42 +378,35 @@ class ObjCameraPoseTrackingDirectEnvCfg(DirectRLEnvCfg):
     # Camera preprocessing settings
     camera_crop_top = 60
     camera_crop_bottom = 20
-    rollout_log_enabled = True
-    rollout_log_path = "/home/adi2440/moveit2_UR5/src/rl_ur5_controller/rl_ur5_controller/isaac_logs/rgb_v5_sim.hdf5"
-    rollout_log_flush_interval = 100
-    rollout_log_stride = 1
 
     # Visualization settings
     visualize_camera_interval = 20000  # Visualize camera every N steps
     visualization_save_path = "./visualize_camera_images"  # Path to save visualizations
 
     # Noise settings
-    joint_pos_noise_min = -0.005
-    joint_pos_noise_max = 0.005
+    joint_pos_noise_min = -0.01
+    joint_pos_noise_max = 0.01
     joint_vel_noise_min = -0.001
     joint_vel_noise_max = 0.001
 
     # Reset settings
-    robot_base_pose = [-0.768, -0.658, 1.402, -2.185, -1.6060665, 1.64142667]
+    robot_base_pose = [-0.568, -0.858, 1.402, -2.185, -1.6060665, 1.64142667]
     robot_reset_noise_range = 0.05
 
 
-class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
-    """Direct RL environment for object camera pose tracking with multi-observation space."""
+class ObjCameraGrayDepthPoseTrackingDirectEnv(DirectRLEnv):
+    """Direct RL environment for object camera pose tracking with multi-observation space (Gray+Depth)."""
 
-    cfg: ObjCameraPoseTrackingDirectEnvCfg
+    cfg: ObjCameraGrayDepthPoseTrackingDirectEnvCfg
 
     def __init__(
         self,
-        cfg: ObjCameraPoseTrackingDirectEnvCfg,
+        cfg: ObjCameraGrayDepthPoseTrackingDirectEnvCfg,
         render_mode: str | None = None,
         **kwargs,
     ):
         # Store config
         self.cfg = cfg
-        self._rollout_logger = None
-        self._rollout_episode_ids = None
-        self._next_rollout_episode_id = 0
 
         # === episode / logging bookkeeping ===
         self._episode_counter = 0
@@ -395,6 +415,7 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         self._state_obs_file = None
         self._state_csv_writer = None
         self._image_obs_dir = None
+        self.num_actions = 6
         # Initialize parent
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -426,18 +447,14 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         )
         self._target_poses = torch.zeros((self.num_envs, 7), device=self.device)
         self._command_time_left = torch.zeros(self.num_envs, device=self.device)
-        self.actions = torch.zeros_like(self._robot_dof_targets)
-        self.policy_actions = torch.zeros_like(self._robot_dof_targets)
-        self._rollout_episode_ids = torch.arange(
-            self.num_envs, device=self.device, dtype=torch.int64
-        )
-        self._next_rollout_episode_id = int(self.num_envs)
 
         # Arm movement state
         self._arm_target_pos = torch.zeros((self.num_envs, 3), device=self.device)
 
-        # Initialize action filter
-        self._setup_action_filter()
+        # Initialize previous actions for smoothness penalty
+        self.previous_actions = torch.zeros(
+            (self.num_envs, self.num_actions), device=self.device
+        )
 
         # Curriculum learning state
         self._curriculum_level = 0
@@ -458,25 +475,9 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             * float("inf"),
         }
 
-        if self.cfg.rollout_log_enabled:
-            self._rollout_logger = RolloutLogger(
-                path=self.cfg.rollout_log_path,
-                run_prefix="arm_avoidance",
-                flush_interval=self.cfg.rollout_log_flush_interval,
-                metadata={
-                    "task": "arm_avoidance",
-                    "num_envs": int(self.num_envs),
-                    "state_dim": int(self.cfg.state_dim),
-                    "action_dim": int(self.cfg.action_space.shape[0]),
-                    "camera_target_height": int(self.cfg.camera_target_height),
-                    "camera_target_width": int(self.cfg.camera_target_width),
-                },
-            )
-            print(f"[INFO] Rollout logging enabled: {self._rollout_logger.path}")
-
         # Log initial information
         print(f"[INFO] Environment initialized with {self.num_envs} environments")
-        print("[INFO] Action mode: normalized absolute joint targets")
+        print(f"[INFO] Action scale: {self.cfg.action_scale}")
         print(f"[INFO] Target pose range X: {self.cfg.target_pose_range['x']}")
         print(f"[INFO] Target pose range Y: {self.cfg.target_pose_range['y']}")
         print(f"[INFO] Target pose range Z: {self.cfg.target_pose_range['z']}")
@@ -496,16 +497,15 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
     def close(self):
         """Cleanup for the environment."""
-        if self._rollout_logger is not None:
-            self._rollout_logger.close()
-            self._rollout_logger = None
         super().close()
 
     def _setup_scene(self):
         """Set up the scene with robots, table, obstacles, cameras, etc."""
         # --- spawn all prims in the source environment only ---
         self._robot = Articulation(self.cfg.robot_cfg)
-        self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+        self._tiled_camera_gray = TiledCamera(self.cfg.tiled_camera_gray)
+        self._tiled_camera_depth = TiledCamera(self.cfg.tiled_camera_depth)
+
         self._ee_frame = FrameTransformer(self.cfg.ee_frame_cfg)
         self._arm = RigidObject(self.cfg.arm_cfg)
 
@@ -520,7 +520,8 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
         # --- register handles in IsaacLab's scene registry ---
         self.scene.articulations["robot"] = self._robot
-        self.scene.sensors["tiled_camera"] = self._tiled_camera
+        self.scene.sensors["tiled_camera_gray"] = self._tiled_camera_gray
+        self.scene.sensors["tiled_camera_depth"] = self._tiled_camera_depth
         self.scene.sensors["ee_frame"] = self._ee_frame
         self.scene.rigid_objects["arm"] = self._arm
 
@@ -545,37 +546,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             intensity=1000.0, color=(1.0, 1.0, 0.9), angle=0.53
         )
         dir_light_cfg.func("/World/DirectionalLight", dir_light_cfg)
-
-    def _setup_action_filter(self):
-        """Initialize action filter states and coefficients."""
-        num_joints = len(self._joint_indices)
-        self._action_filter_x1 = torch.zeros(
-            (self.num_envs, num_joints), device=self.device
-        )
-        self._action_filter_x2 = torch.zeros(
-            (self.num_envs, num_joints), device=self.device
-        )
-        self._action_filter_y1 = torch.zeros(
-            (self.num_envs, num_joints), device=self.device
-        )
-        self._action_filter_y2 = torch.zeros(
-            (self.num_envs, num_joints), device=self.device
-        )
-
-        # Calculate filter coefficients
-        if self.cfg.action_filter_order == 2:
-            omega = 2.0 * math.pi * self.cfg.action_filter_cutoff_freq
-            dt = self.cfg.sim.dt
-            k = omega * dt
-            a1 = k * k
-            a2 = k * 2.0 * self.cfg.action_filter_damping_ratio
-            a3 = a1 + a2 + 1.0
-
-            self._filter_b0 = a1 / a3
-            self._filter_b1 = 2.0 * a1 / a3
-            self._filter_b2 = a1 / a3
-            self._filter_a1 = (2.0 * a1 - 2.0) / a3
-            self._filter_a2 = (a1 - a2 + 1.0) / a3
 
     def _update_curriculum_settings(self):
         """Update environment settings based on curriculum level."""
@@ -622,14 +592,20 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """Apply actions before physics step."""
-        self.policy_actions = actions.clone().clamp(-1.0, 1.0)
-
-        if self.cfg.action_filter_order == 2:
-            filtered_actions = self._apply_action_filter(self.policy_actions)
+        # Update previous actions (before overwriting self.actions)
+        if hasattr(self, "actions"):
+            self.previous_actions = self.actions.clone()
         else:
-            filtered_actions = self.policy_actions
+            self.previous_actions = torch.zeros_like(actions)
 
-        self.actions = self._policy_actions_to_joint_targets(filtered_actions)
+        # Store raw actions
+        self.actions = actions.clone().clamp(-1.0, 1.0)
+
+        # Action filter removed for direct control
+        # filtered_actions = self._apply_action_filter(self.actions)
+
+        # Scale actions
+        self.actions = self.actions * self.cfg.action_scale
 
         # Update command timer
         self._command_time_left -= self.physics_dt
@@ -655,67 +631,36 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         # Update debug visualization if enabled
         self._update_debug_visualization()
 
+        # Save data for GAN training
+
     def _apply_action(self) -> None:
         """Apply the processed actions to the robot with safety checks."""
+        # Get current joint positions
         current_joint_pos = self._robot.data.joint_pos[:, self._joint_indices]
-        desired_joint_pos = torch.clamp(
-            self.actions,
-            self._robot_dof_lower_limits + self.cfg.joint_limit_safety_margin,
-            self._robot_dof_upper_limits - self.cfg.joint_limit_safety_margin,
+
+        # Add actions to current positions for position control
+        self._robot_dof_targets = current_joint_pos + self.actions
+
+        # Clamp to joint limits with safety margin
+        safety_margin = 0.05  # radians
+        self._robot_dof_targets = torch.clamp(
+            self._robot_dof_targets,
+            self._robot_dof_lower_limits + safety_margin,
+            self._robot_dof_upper_limits - safety_margin,
         )
-        max_joint_delta = self.cfg.max_joint_velocity * self.physics_dt
-        joint_delta = torch.clamp(
-            desired_joint_pos - current_joint_pos,
-            -max_joint_delta,
-            max_joint_delta,
-        )
-        self._robot_dof_targets = current_joint_pos + joint_delta
+
+        # Apply velocity limits for safety
+        max_velocity = 1.5  # rad/s
+        velocity_command = (
+            self._robot_dof_targets - current_joint_pos
+        ) / self.physics_dt
+        velocity_command = torch.clamp(velocity_command, -max_velocity, max_velocity)
+        self._robot_dof_targets = current_joint_pos + velocity_command * self.physics_dt
 
         # Set joint position targets
         self._robot.set_joint_position_target(
             self._robot_dof_targets, joint_ids=self._joint_indices
         )
-
-    def _policy_actions_to_joint_targets(
-        self, policy_actions: torch.Tensor
-    ) -> torch.Tensor:
-        """Map normalized policy actions in [-1, 1] to absolute joint targets."""
-        lower_limits = self._robot_dof_lower_limits + self.cfg.joint_limit_safety_margin
-        upper_limits = self._robot_dof_upper_limits - self.cfg.joint_limit_safety_margin
-        joint_center = 0.5 * (upper_limits + lower_limits)
-        joint_half_range = 0.5 * (upper_limits - lower_limits)
-        return joint_center + policy_actions * joint_half_range
-
-    def _joint_targets_to_policy_actions(
-        self, joint_targets: torch.Tensor
-    ) -> torch.Tensor:
-        """Map absolute joint targets to normalized policy action coordinates."""
-        lower_limits = self._robot_dof_lower_limits + self.cfg.joint_limit_safety_margin
-        upper_limits = self._robot_dof_upper_limits - self.cfg.joint_limit_safety_margin
-        joint_center = 0.5 * (upper_limits + lower_limits)
-        joint_half_range = torch.clamp(0.5 * (upper_limits - lower_limits), min=1e-6)
-        return torch.clamp((joint_targets - joint_center) / joint_half_range, -1.0, 1.0)
-
-    def _apply_action_filter(self, actions: torch.Tensor) -> torch.Tensor:
-        """Apply second-order Butterworth filter to actions."""
-        if self.cfg.action_filter_order == 2:
-            filtered_actions = (
-                self._filter_b0 * actions
-                + self._filter_b1 * self._action_filter_x1
-                + self._filter_b2 * self._action_filter_x2
-                - self._filter_a1 * self._action_filter_y1
-                - self._filter_a2 * self._action_filter_y2
-            )
-
-            # Update filter memory
-            self._action_filter_x2 = self._action_filter_x1.clone()
-            self._action_filter_x1 = actions.clone()
-            self._action_filter_y2 = self._action_filter_y1.clone()
-            self._action_filter_y1 = filtered_actions.clone()
-
-            return filtered_actions
-        else:
-            return actions
 
     def _sample_commands(self, env_ids: Sequence[int]) -> None:
         """Randomize the target poses for the given env indices."""
@@ -861,7 +806,10 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             local_pos = torch.tensor([new_x, new_y, new_z], device=self.device)
             arm_positions[i, :3] = local_pos + self.scene.env_origins[i, :3]
 
-        # Apply new poses (keep original orientation)
+        # Apply new poses with fixed orientation quaternion (w, x, y, z)
+        fixed_quat = torch.tensor([0.0, 0.99144, -0.0, -0.13053], device=self.device)
+        fixed_quat = fixed_quat / torch.norm(fixed_quat)  # normalize
+        arm_quats = fixed_quat.unsqueeze(0).expand(self.num_envs, -1)
         self._arm.write_root_pose_to_sim(torch.cat([arm_positions, arm_quats], dim=-1))
 
         # Calculate and set velocities for smooth physics
@@ -897,7 +845,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
         # Get camera observations
         camera_obs = self._get_camera_observations()
-        self._log_rollout_batch(state_obs, camera_obs)
 
         obs = {"image": camera_obs, "state": state_obs}
         observations = {"policy": obs}
@@ -917,7 +864,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             joint_pos_noisy = joint_pos + joint_pos_noise
         else:
             joint_pos_noisy = joint_pos
-        joint_pos_obs = self._joint_targets_to_policy_actions(joint_pos_noisy)
 
         # Get joint velocities with noise
         # joint_vel = self._robot.data.joint_vel[:, self._joint_indices]
@@ -935,7 +881,7 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         # Concatenate all state observations
         state_obs = torch.cat(
             [
-                joint_pos_obs,  # 6 dims, normalized to match action coordinates
+                joint_pos_noisy,  # 6 dims
                 # joint_vel_noisy,      # 6 dims
                 target_pose,  # 7 dims
             ],
@@ -952,12 +898,13 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
         # Get data for specified environment
+        # raw_image is a dict/tensor depending on how we call it. Assuming it's the RGB one for now for vis.
         raw_env = raw_image[env_id].cpu().numpy()
-        processed_env = processed_image[env_id].cpu().numpy()
+        processed_env = processed_image[env_id].cpu().numpy()  # (2, H, W)
 
-        # Raw image
+        # Raw image (Gray) - Displaying channel 0 of RGB input for simplicity
         axes[0].imshow(raw_env)
-        axes[0].set_title(f"Raw Camera Image (224x224)\nEnv {env_id}")
+        axes[0].set_title(f"Raw RGB (Env {env_id})")
         axes[0].axis("off")
 
         # Add crop region visualization on raw image
@@ -970,49 +917,20 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             facecolor="none",
         )
         axes[0].add_patch(crop_rect)
-        axes[0].text(
-            5, self.cfg.camera_crop_top - 5, "Crop Region", color="red", fontsize=10
-        )
 
-        # Processed image (CHW to HWC for visualization)
-        processed_vis = processed_env.transpose(1, 2, 0)
-
-        # Show normalized image
-        axes[1].imshow(processed_vis + 0.5)  # Add 0.5 since we subtracted mean
+        # Processed image (Combine channels for VIS or just show Gray)
+        # Show Gray channel
+        # processed_env is (2, H, W).
+        axes[1].imshow(processed_env[0], cmap="gray")
         axes[1].set_title(
-            f"Processed & Resized\n({self.cfg.camera_target_height}x{self.cfg.camera_target_width})"
+            f"Processed Gray\n({self.cfg.camera_target_height}x{self.cfg.camera_target_width})"
         )
         axes[1].axis("off")
 
-        # Show channel statistics
+        # Show Depth channel
+        axes[2].imshow(processed_env[1], cmap="viridis")
+        axes[2].set_title(f"Processed Depth")
         axes[2].axis("off")
-        stats_text = f"Processed Image Statistics (Env {env_id}):\n\n"
-        stats_text += f"Shape: {processed_env.shape}\n"
-        stats_text += f"Min value: {processed_env.min():.3f}\n"
-        stats_text += f"Max value: {processed_env.max():.3f}\n"
-        stats_text += f"Mean value: {processed_env.mean():.3f}\n"
-        stats_text += f"Std value: {processed_env.std():.3f}\n\n"
-
-        # Add current state info
-        ee_pos = self._ee_frame.data.target_pos_w[env_id, 0, :].cpu().numpy()
-        target_pos = self._target_poses[env_id, :3].cpu().numpy()
-        arm_pos = self._arm.data.root_pos_w[env_id, :3].cpu().numpy()
-
-        stats_text += (
-            f"End-effector pos: [{ee_pos[0]:.3f}, {ee_pos[1]:.3f}, {ee_pos[2]:.3f}]\n"
-        )
-        stats_text += f"Target pos: [{target_pos[0]:.3f}, {target_pos[1]:.3f}, {target_pos[2]:.3f}]\n"
-        stats_text += f"Arm obstacle pos: [{arm_pos[0]:.3f}, {arm_pos[1]:.3f}, {arm_pos[2]:.3f}]\n"
-
-        axes[2].text(
-            0.1,
-            0.5,
-            stats_text,
-            transform=axes[2].transAxes,
-            fontsize=11,
-            verticalalignment="center",
-            family="monospace",
-        )
 
         plt.tight_layout()
 
@@ -1028,26 +946,45 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
     def _get_camera_observations(self) -> torch.Tensor:
         """Get and preprocess camera observations."""
-        # Get camera data
-        camera_data = (
-            self._tiled_camera.data.output["rgb"] / 255.0
-        )  # Shape: (num_envs, H, W, C)
+        # 1. Get Grayscale Data (from RGB)
+        rgb_data = self._tiled_camera_gray.data.output["rgb"] / 255.0  # (N, H, W, 3)
+        # Convert to grayscale by averaging channels
+        gray_data = torch.mean(rgb_data, dim=-1, keepdim=True)  # (N, H, W, 1)
 
-        # Store raw image for visualization
-        raw_camera_data = camera_data.clone()
+        # 2. Get Depth Data
+        depth_data = self._tiled_camera_depth.data.output[
+            "distance_to_image_plane"
+        ]  # (N, H, W, 1)
 
-        # Mean subtraction for normalization
-        mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
-        camera_data = camera_data - mean_tensor
+        # --- Fix for depth stability ---
+        # Replace infinity/nan with max range (e.g. 3.0m)
+        max_depth = 3.0
+        depth_data = torch.nan_to_num(
+            depth_data, nan=max_depth, posinf=max_depth, neginf=0.0
+        )
+        depth_data = torch.clamp(depth_data, 0.0, max_depth)
 
-        # Crop image (top and bottom)
-        cropped = camera_data[
+        # Normalize depth to [0, 1] range (consistent with gray)
+        depth_data = depth_data / max_depth
+
+        # 3. Concatenate
+        combined_data = torch.cat([gray_data, depth_data], dim=-1)  # (N, H, W, 2)
+
+        # Store raw RGB for visualization (optional)
+        raw_camera_data = rgb_data.clone()
+
+        # 4. Mean subtraction (Center the data)
+        mean_tensor = torch.mean(combined_data, dim=(1, 2), keepdim=True)
+        combined_data = combined_data - mean_tensor
+
+        # 5. Crop image (top and bottom)
+        cropped = combined_data[
             :, self.cfg.camera_crop_top : -self.cfg.camera_crop_bottom, :, :
         ]
 
-        # Resize to target size using interpolation
-        # Convert to NCHW format for processing
-        cropped = cropped.permute(0, 3, 1, 2)  # (N, C, H, W)
+        # 6. Resize
+        # Convert to NCHW for interpolation
+        cropped = cropped.permute(0, 3, 1, 2)  # (N, 2, H, W)
 
         # Resize using torch interpolation
         resized = torch.nn.functional.interpolate(
@@ -1142,17 +1079,8 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         orientation_reward = self.cfg.reward_orientation_weight * orientation_huber_loss
         traditional_rewards += orientation_reward
 
-        # # 4. Joint torque penalty
-        if (
-            hasattr(self._robot.data, "applied_torque")
-            and self._robot.data.applied_torque is not None
-        ):
-            joint_torques = self._robot.data.applied_torque[:, self._joint_indices]
-            torque_penalty = torch.sum(torch.square(joint_torques), dim=1)
-            torque_reward = self.cfg.reward_torque_weight * torque_penalty
-            rewards += torque_reward
-        else:
-            torque_reward = torch.zeros_like(rewards)
+        # 4. Joint torque penalty - Removed
+        # torque_reward removed from calculation
 
         # 5. Table collision penalty
         ee_height = ee_position[:, 2]
@@ -1171,6 +1099,21 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             self._compute_arm_avoidance_rewards() * self.cfg.reward_arm_avoidance_weight
         )
         traditional_rewards += arm_reward
+
+        # 7. Action Rate Penalty (Smoothness)
+        # Penalize large changes in action between steps
+        # Use simple difference norm
+        if hasattr(self, "previous_actions"):
+            # Use raw unscaled actions for penalty calculation to be scale-invariant relative to policy output
+            # current_actions = self.actions / self.cfg.action_scale # Reconstruct or use stored?
+            # Actually, self.actions IS scaled now. Let's compare scaled actions or unscaled?
+            # Typically unscaled is better for policy smoothness, but scaled is better for physical smoothness.
+            # Using scaled actions (actual command change)
+            action_diff = self.actions - self.previous_actions
+            action_rate_penalty = torch.sum(action_diff**2, dim=-1)
+            traditional_rewards += (
+                action_rate_penalty * self.cfg.reward_action_rate_weight
+            )
 
         # 7 Success for reaching the end goal and avoiding the arm
         # Calculate minimum distance from end effector to arm cuboid
@@ -1466,13 +1409,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
             # Update target to prevent immediate re-collision
             self._robot_dof_targets[env_id] = joint_pos
-            self.actions[env_id] = joint_pos
-            normalized_joint_pos = self._joint_targets_to_policy_actions(joint_pos)
-            self.policy_actions[env_id] = normalized_joint_pos
-            self._action_filter_x1[env_id] = normalized_joint_pos
-            self._action_filter_x2[env_id] = normalized_joint_pos
-            self._action_filter_y1[env_id] = normalized_joint_pos
-            self._action_filter_y2[env_id] = normalized_joint_pos
 
             # Log the reset
             if len(stuck_env_ids) <= 2:  # Avoid spam
@@ -1574,10 +1510,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         self._robot.write_joint_state_to_sim(
             joint_pos, joint_vel, joint_ids=self._joint_indices, env_ids=env_ids
         )
-        self._robot_dof_targets[env_ids] = joint_pos
-        self.actions[env_ids] = joint_pos
-        normalized_joint_pos = self._joint_targets_to_policy_actions(joint_pos)
-        self.policy_actions[env_ids] = normalized_joint_pos
 
         # Reset arm position and orientation targets
         for i, env_id in enumerate(env_ids):
@@ -1630,23 +1562,12 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         # Reset target poses
         self._sample_target_poses_for_reset(env_ids)
 
-        # Reset action filter states
-        self._action_filter_x1[env_ids] = normalized_joint_pos
-        self._action_filter_x2[env_ids] = normalized_joint_pos
-        self._action_filter_y1[env_ids] = normalized_joint_pos
-        self._action_filter_y2[env_ids] = normalized_joint_pos
+        # Reset previous actions for smoothness penalty
+        if hasattr(self, "previous_actions"):
+            self.previous_actions[env_ids] = 0.0
 
         # Reset timers
         self._command_time_left[env_ids] = self.cfg.command_resampling_time
-        if self._rollout_episode_ids is not None:
-            episode_ids = torch.arange(
-                self._next_rollout_episode_id,
-                self._next_rollout_episode_id + num_resets,
-                device=self.device,
-                dtype=torch.int64,
-            )
-            self._rollout_episode_ids[env_ids] = episode_ids
-            self._next_rollout_episode_id += num_resets
 
     def _sample_target_poses_for_reset(self, env_ids: Sequence[int]):
         """Sample new target poses for reset environments."""
@@ -1688,49 +1609,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
         # Update buffers
         self._target_poses[env_ids, :3] = torch.stack([x, y, z], dim=-1)
         self._target_poses[env_ids, 3:7] = target_quat
-
-    def _log_rollout_batch(
-        self, state_obs: torch.Tensor, camera_obs: torch.Tensor
-    ) -> None:
-        if self._rollout_logger is None:
-            return
-        if self.common_step_counter % max(1, int(self.cfg.rollout_log_stride)) != 0:
-            return
-
-        joint_pos = self._robot.data.joint_pos[:, self._joint_indices]
-        joint_vel = self._robot.data.joint_vel[:, self._joint_indices]
-        robot_pos = self._robot.data.root_state_w[:, :3]
-        robot_quat = self._robot.data.root_state_w[:, 3:7]
-        ee_pos_w = self._ee_frame.data.target_pos_w[..., 0, :]
-        ee_quat_w = self._ee_frame.data.target_quat_w[..., 0, :]
-        ee_pos_b, ee_quat_b = math_utils.subtract_frame_transforms(
-            robot_pos, robot_quat, ee_pos_w, ee_quat_w
-        )
-        ee_pose = torch.cat([ee_pos_b, ee_quat_b], dim=-1)
-
-        self._rollout_logger.append_batch(
-            states=state_obs.detach().cpu().numpy().astype(np.float32),
-            images=camera_obs.detach().cpu().numpy().astype(np.float32),
-            base_actions=self.actions.detach().cpu().numpy().astype(np.float32),
-            policy_actions=self.policy_actions.detach()
-            .cpu()
-            .numpy()
-            .astype(np.float32),
-            joint_positions=joint_pos.detach().cpu().numpy().astype(np.float32),
-            joint_velocities=joint_vel.detach().cpu().numpy().astype(np.float32),
-            joint_targets=self._robot_dof_targets.detach()
-            .cpu()
-            .numpy()
-            .astype(np.float32),
-            ee_poses=ee_pose.detach().cpu().numpy().astype(np.float32),
-            target_poses=self._target_poses.detach().cpu().numpy().astype(np.float32),
-            episode_ids=self._rollout_episode_ids.detach()
-            .cpu()
-            .numpy()
-            .astype(np.int64),
-            step_ids=self.episode_length_buf.detach().cpu().numpy().astype(np.int64),
-            env_ids=np.arange(self.num_envs, dtype=np.int64),
-        )
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         # Create markers for visualizing the goal poses
@@ -1817,31 +1695,218 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             self._state_obs_file.flush()
 
     # -------------------------------------------------------------------------
-    # 3) SAVE IMAGE OBSERVATIONS
+    # 3) SAVE AGAN DATA (IMAGES + METADATA)
     # -------------------------------------------------------------------------
-    def _save_image_observations(self):
-        """Save the processed camera observations (normalized, cropped, resized) as PNGs."""
-        # Lazily create output directory
-        if self._image_obs_dir is None:
-            self._image_obs_dir = "./image_data"
-            os.makedirs(self._image_obs_dir, exist_ok=True)
+    def _world_to_screen(
+        self, points_3d, camera_pos, camera_quat, intrinsics, width, height
+    ):
+        """
+        Project 3D points to 2D screen coordinates.
+        points_3d: (N, 3) tensor
+        camera_pos: (3,) tensor
+        camera_quat: (4,) tensor (w, x, y, z)
+        intrinsics: (3, 3) tensor
+        """
+        # Transform to camera frame
+        # R_cw = R_wc^T
+        rot_mat = math_utils.matrix_from_quat(camera_quat)
+        points_cam = torch.matmul(points_3d - camera_pos, rot_mat.T)
 
-        step = self.common_step_counter
-        # 1) Grab the processed tensor: shape (num_envs, C, H, W)
-        processed = self._get_camera_observations().cpu().numpy()
+        # Convert OpenGL (Isaac) to OpenCV (Pinhole) convention
+        # OpenGL: -Z forward, +Y up
+        # OpenCV: +Z forward, +Y down
+        # x_cv = x_gl, y_cv = -y_gl, z_cv = -z_gl
+        points_cam = points_cam * torch.tensor(
+            [1.0, -1.0, -1.0], device=points_cam.device
+        )
 
-        # 2) For each env, convert to H×W×C and shift back into [0,1] for saving
-        for env_id in range(self.num_envs):
-            proc = processed[env_id].transpose(1, 2, 0)  #  (H, W, C)
-            vis = np.clip(proc + 0.5, 0.0, 1.0)  # undo mean subtraction
-            fname = f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}.png"
-            path = os.path.join(self._image_obs_dir, fname)
-            plt.imsave(path, vis)
+        # Project to image plane: p_pix = K * (P_cam / P_cam_z)
+        # Handle division by zero
+        depths = points_cam[:, 2].clone()
+        depths[depths < 1e-5] = 1e-5
 
-        if step % 10 == 0:
-            print(
-                f"[SAVE] Processed images saved to {self._image_obs_dir} at step {step}"
+        points_2d_homo = torch.matmul(points_cam, intrinsics.T)
+        u = points_2d_homo[:, 0] / depths
+        v = points_2d_homo[:, 1] / depths
+
+        return torch.stack([u, v], dim=1)
+
+    def _get_camera_observations(self) -> torch.Tensor:
+        """Get and preprocess camera observations."""
+        # 1. Get Grayscale Data (from RGB)
+        rgb_data = self._tiled_camera_gray.data.output["rgb"] / 255.0  # (N, H, W, 3)
+        # Convert to grayscale by averaging channels
+        gray_data = torch.mean(rgb_data, dim=-1, keepdim=True)  # (N, H, W, 1)
+
+        # 2. Get Depth Data
+        depth_data = self._tiled_camera_depth.data.output[
+            "distance_to_image_plane"
+        ]  # (N, H, W, 1)
+
+        # --- Fix for depth stability ---
+        # Replace infinity/nan with max range (e.g. 10.0m)
+        max_depth = 10.0
+        depth_data = torch.nan_to_num(depth_data, posinf=max_depth, neginf=0.0)
+        depth_data = torch.clamp(depth_data, 0.0, max_depth)
+
+        # Normalize depth to [0, 1] range roughly to match grayscale intensity distribution
+        depth_data = depth_data / max_depth
+
+        # 3. Concatenate
+        combined_data = torch.cat([gray_data, depth_data], dim=-1)  # (N, H, W, 2)
+
+        # Store raw RGB for visualization (optional)
+        raw_camera_data = rgb_data.clone()
+
+        # 4. Mean subtraction (Center the data)
+        mean_tensor = torch.mean(combined_data, dim=(1, 2), keepdim=True)
+        combined_data = combined_data - mean_tensor
+
+        # 5. Crop image (top and bottom)
+        cropped = combined_data[
+            :, self.cfg.camera_crop_top : -self.cfg.camera_crop_bottom, :, :
+        ]
+
+        # 6. Resize
+        # Convert to NCHW for interpolation
+        cropped = cropped.permute(0, 3, 1, 2)  # (N, 2, H, W)
+
+        # Resize using torch interpolation
+        resized = torch.nn.functional.interpolate(
+            cropped,
+            size=(self.cfg.camera_target_height, self.cfg.camera_target_width),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        # Visualize camera observation periodically
+        if self.common_step_counter % self.cfg.visualize_camera_interval == 0:
+            self._visualize_camera_observation(raw_camera_data, resized, env_id=0)
+
+        # --- AGAN Data Saving (Integrated) ---
+        if self.cfg.save_agan_images and (
+            self.common_step_counter % self.cfg.agan_save_interval == 0
+        ):
+            # Ensure directory exists
+            if self._image_obs_dir is None:
+                self._image_obs_dir = os.path.join(
+                    self.cfg.agan_data_dir, f"run_{self._episode_counter}"
+                )
+                os.makedirs(self._image_obs_dir, exist_ok=True)
+
+            step = self.common_step_counter
+            processed_np = resized.cpu().numpy()
+            metadata = {}
+
+            # Arm BBox Prep
+            half_dims = torch.tensor(self.cfg.arm_approx_dims, device=self.device) * 0.5
+            corners_local = (
+                torch.tensor(
+                    list(itertools.product([-1, 1], repeat=3)), device=self.device
+                )
+                * half_dims
             )
+
+            # Original dimensions for BBox projection (before crop/resize)
+            orig_width = self.cfg.tiled_camera_gray.width
+            orig_height = self.cfg.tiled_camera_gray.height
+
+            for env_id in range(self.num_envs):
+                # Save Images
+                # Env data: (C, H, W) -> (H, W, C)
+                env_data = processed_np[env_id].transpose(1, 2, 0)
+
+                # Undo mean subtraction (add 0.5) and clip
+                vis_data = np.clip(env_data + 0.5, 0.0, 1.0)
+
+                gray_img = (vis_data[..., 0] * 255).astype(np.uint8)
+                depth_img = (vis_data[..., 1] * 255).astype(np.uint8)
+
+                # File names
+                prefix = f"ep{self._episode_counter:03d}_step{step:06d}_env{env_id}"
+                gray_path = os.path.join(self._image_obs_dir, f"{prefix}_gray.png")
+                depth_path = os.path.join(self._image_obs_dir, f"{prefix}_depth.png")
+
+                Image.fromarray(gray_img).save(gray_path)
+                Image.fromarray(depth_img).save(depth_path)
+
+                # Calculate BBox
+                # 3D -> 2D (Original)
+                arm_pos = self._arm.data.root_pos_w[env_id]
+                arm_quat = self._arm.data.root_quat_w[env_id]
+                rot_mat_arm = math_utils.matrix_from_quat(arm_quat)
+                corners_world = torch.matmul(corners_local, rot_mat_arm.T) + arm_pos
+
+                cam_pos = self._tiled_camera_gray.data.pos_w[env_id]
+                cam_quat = self._tiled_camera_gray.data.quat_w_world[env_id]
+                intrinsics = self._tiled_camera_gray.data.intrinsic_matrices[env_id]
+
+                pts_2d = self._world_to_screen(
+                    corners_world,
+                    cam_pos,
+                    cam_quat,
+                    intrinsics,
+                    orig_width,
+                    orig_height,
+                )
+
+                # Adjust for Crop and Resize
+                pts_2d[:, 1] -= self.cfg.camera_crop_top
+
+                crop_h = (
+                    orig_height - self.cfg.camera_crop_top - self.cfg.camera_crop_bottom
+                )
+                crop_w = orig_width
+
+                scale_y = self.cfg.camera_target_height / crop_h
+                scale_x = self.cfg.camera_target_width / crop_w
+
+                pts_2d[:, 0] *= scale_x
+                pts_2d[:, 1] *= scale_y
+
+                # Bounds
+                u_min = pts_2d[:, 0].min().item()
+                u_max = pts_2d[:, 0].max().item()
+                v_min = pts_2d[:, 1].min().item()
+                v_max = pts_2d[:, 1].max().item()
+
+                # Clamp
+                u_min = max(0, min(self.cfg.camera_target_width, u_min))
+                u_max = max(0, min(self.cfg.camera_target_width, u_max))
+                v_min = max(0, min(self.cfg.camera_target_height, v_min))
+                v_max = max(0, min(self.cfg.camera_target_height, v_max))
+
+                is_valid = (
+                    (u_max > u_min)
+                    and (v_max > v_min)
+                    and (u_max - u_min > 2)
+                    and (v_max - v_min > 2)
+                )
+
+                # Metadata
+                meta_key = os.path.abspath(gray_path)
+                metadata[meta_key] = {
+                    "env": env_id,
+                    "step": step,
+                    "bbox": [u_min, v_min, u_max, v_max],
+                    "success": is_valid,
+                    "arm_pos_3d": arm_pos.cpu().tolist(),
+                    "episode": self._episode_counter,
+                }
+
+            if step % 10 == 0:
+                print(
+                    f"[SAVE] Saved AGAN data (imgs+meta) to {self._image_obs_dir} at step {step}"
+                )
+
+            # Append metadata
+            jsonl_path = os.path.join(self.cfg.agan_data_dir, "metadata.jsonl")
+            with open(jsonl_path, "a") as f:
+                for k, v in metadata.items():
+                    v["image_path"] = k
+                    f.write(json.dumps(v) + "\n")
+
+        return resized
 
     def _debug_vis_callback(self, event):
         """Update debug visualization markers and save joint targets."""
@@ -1863,7 +1928,7 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             translations=des_pos_w, orientations=des_quat_w
         )
 
-        # Calculate and update joint targets (moved outside the conditional block)
+        # Calculate metrics for logging only (do not update targets)
         ee_position = self._ee_frame.data.target_pos_w[..., 0, :]
         arm_half_extents = torch.tensor([0.25, 0.1, 0.06], device=self.device)
         arm_position = self._arm.data.root_pos_w[:, :3]
@@ -1873,12 +1938,6 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
             ee_position, arm_position, arm_quat, arm_half_extents
         )
         beta_values = self._compute_beta_transition(min_distances)
-
-        # self._save_joint_targets()
-
-        # # # new: save state & image
-        # self._save_state_observations()
-        self._save_image_observations()
 
         # Additionally log APF beta values for first few environments (every 10 steps)
         if self.common_step_counter % 10 == 0:
@@ -1971,10 +2030,14 @@ class ObjCameraPoseTrackingDirectEnv(DirectRLEnv):
 
 # Factory function for creating the environment
 def create_obj_camera_pose_tracking_env(
-    cfg: ObjCameraPoseTrackingDirectEnvCfg = None, render_mode: str = None, **kwargs
-) -> ObjCameraPoseTrackingDirectEnv:
+    cfg: ObjCameraGrayDepthPoseTrackingDirectEnvCfg = None,
+    render_mode: str = None,
+    **kwargs,
+) -> ObjCameraGrayDepthPoseTrackingDirectEnv:
     """Factory function to create the environment with default config if none provided."""
     if cfg is None:
-        cfg = ObjCameraPoseTrackingDirectEnvCfg()
+        cfg = ObjCameraGrayDepthPoseTrackingDirectEnvCfg()
 
-    return ObjCameraPoseTrackingDirectEnv(cfg, render_mode=render_mode, **kwargs)
+    return ObjCameraGrayDepthPoseTrackingDirectEnv(
+        cfg, render_mode=render_mode, **kwargs
+    )
