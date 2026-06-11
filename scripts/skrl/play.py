@@ -158,6 +158,9 @@ def main():
             return
     elif args_cli.checkpoint:
         resume_path = os.path.abspath(args_cli.checkpoint)
+    elif args_cli.task == "UR5-Hierarchical-Depth-PPO":
+        resume_path = os.path.abspath("logs/skrl/logs/skrl_hierarchical_depth/v1/checkpoints/best_agent.pt")
+        print(f"[INFO] Using default hierarchical checkpoint: {resume_path}")
     else:
         resume_path = get_checkpoint_path(
             log_root_path,

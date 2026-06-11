@@ -160,7 +160,7 @@ export WANDB_API_KEY="<your_api_key_here>"
 
 - Enable WandB in the project configuration at:
 
-`source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/agents/PPO_skrl_camera.yaml`
+`source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/agents/PPO_skrl_hierarchical_gray_depth.yaml`
 
 Set `agent.experiment.wandb: true` and set `agent.experiment.wandb_kwargs.project` / `agent.experiment.wandb_kwargs.entity` to your project and account.
 
@@ -187,12 +187,12 @@ If you prefer not to build from source, you can use pre-built packages for Isaac
 
 ### Quick Start
 
-Train the UR5 manipulator with vision-based reinforcement learning:
+Train the UR5 manipulator with vision-based reinforcement learning (High-Level Policy):
 
 ```bash
 python scripts/skrl/train.py \
-    --task=UR5-Depth-PPO \
-    --num_envs 2 \
+    --task=UR5-Hierarchical-Depth-PPO \
+    --num_envs 32 \
     --enable_cameras \
     --headless
 ```
@@ -214,7 +214,7 @@ For longer training with more environments:
 
 ```bash
 python scripts/skrl/train.py \
-    --task=UR5-Depth-PPO \
+    --task=UR5-Hierarchical-Depth-PPO \
     --num_envs 64 \
     --enable_cameras \
     --headless \
@@ -238,9 +238,9 @@ logs/skrl/logs/<experiment_name>/<timestamp>/
 
 ---
 
-## Hierarchical Waypoint RL
+### How It Works
 
-The hierarchical setup is intended for smoother, more deployable behavior than direct joint-action PPO. It splits the problem into:
+The hierarchical setup splits the problem into:
 
 - `UR5-Waypoint-LowLevel-PPO`: a state-only low-level waypoint tracker with 6-D joint-delta actions.
 - `UR5-Hierarchical-Depth-PPO`: a high-level gray+depth visual policy with 3-D Cartesian waypoint actions. The waypoint is executed by a damped differential IK controller inside the environment.
@@ -251,17 +251,7 @@ The human arm pose is not provided in the policy state; obstacle awareness must 
 
 For a deeper explanation of how the high-level policy chooses and learns waypoints, see [HIERARCHICAL_WAYPOINT_RL.md](HIERARCHICAL_WAYPOINT_RL.md).
 
-### Train the High-Level Visual Waypoint Policy
-
-```bash
-python scripts/skrl/train.py \
-    --task=UR5-Hierarchical-Depth-PPO \
-    --num_envs 32 \
-    --enable_cameras \
-    --headless
-```
-
-For a quick smoke test:
+For a quick smoke test of the high-level policy:
 
 ```bash
 python scripts/skrl/train.py \
@@ -319,16 +309,15 @@ source /home/adi2440/isaacsim/setup_conda_env.sh
 
 ## 🎮 Evaluation
 
-### Playing a Trained Model
+### Playing the Default Trained Model
 
-To visualize and evaluate a trained checkpoint:
+To visualize and evaluate the default trained hierarchical checkpoint (`logs/skrl/logs/skrl_hierarchical_depth/v1/checkpoints/best_agent.pt`):
 
 ```bash
 python scripts/skrl/play.py \
-    --task=UR5-Depth-PPO \
+    --task=UR5-Hierarchical-Depth-PPO \
     --num_envs 2 \
-    --enable_cameras \
-    --checkpoint logs/skrl/logs/skrl_camera_pose_tracking/arm_avoidance_v1/checkpoints/best_agent.pt
+    --enable_cameras
 ```
 
 ### Evaluation Arguments
@@ -349,10 +338,9 @@ Evaluate multiple checkpoints or conditions:
 # Evaluate with different environment counts
 for n in 1 2 4 8; do
     python scripts/skrl/play.py \
-        --task=UR5-Depth-PPO \
+        --task=UR5-Hierarchical-Depth-PPO \
         --num_envs $n \
-        --enable_cameras \
-        --checkpoint <your_checkpoint_path>
+        --enable_cameras
 done
 ```
 
@@ -365,13 +353,13 @@ done
 This project includes Weights & Biases (WandB) integration for experiment tracking. Configuration is located at:
 
 ```
-source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/agents/PPO_skrl_camera.yaml
+source/RL_UR5/RL_UR5/tasks/direct/rl_ur5/agents/PPO_skrl_hierarchical_gray_depth.yaml
 ```
 
 To enable WandB logging, modify the configuration:
 
 ```yaml
-# In PPO_skrl_camera.yaml
+# In PPO_skrl_hierarchical_gray_depth.yaml
 agent:
   experiment:
     wandb: true
@@ -431,7 +419,7 @@ python scripts/visualize_results.py --log_dir logs/skrl/logs/<experiment_name>
 **1. CUDA Out of Memory**
 ```bash
 # Reduce number of environments
-python scripts/skrl/train.py --task=UR5-Depth-PPO --num_envs 1 --enable_cameras
+python scripts/skrl/train.py --task=UR5-Hierarchical-Depth-PPO --num_envs 1 --enable_cameras
 ```
 
 **2. Camera not rendering**
