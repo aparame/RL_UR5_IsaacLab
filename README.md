@@ -7,7 +7,7 @@
 </div>
 
 
-This project implements vision-based reinforcement learning for the UR5 robotic manipulator in Isaac Lab, enabling precise object manipulation through camera-guided control. Our framework combines state-of-the-art physics simulation with deep reinforcement learning to achieve robust pick-and-place operations in complex environments.
+This project implements vision-based reinforcement learning for the UR5 robotic manipulator in Isaac Lab, enabling precise object manipulation through camera-guided control. Our framework combines state-of-the-art physics simulation with deep reinforcement learning to achieve robust reach-avoid operations in complex environments.
 
 **Key Features:**
 - 🎯 **Vision-Based Control**: Direct camera input for object detection and manipulation
