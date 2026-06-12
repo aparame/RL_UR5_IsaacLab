@@ -311,13 +311,14 @@ source /home/adi2440/isaacsim/setup_conda_env.sh
 
 ### Playing the Default Trained Model
 
-To visualize and evaluate the default trained hierarchical checkpoint (`logs/skrl/logs/skrl_hierarchical_depth/v1/checkpoints/best_agent.pt`):
+To visualize and evaluate the default trained hierarchical checkpoint, you can run inference with the following command:
 
 ```bash
 python scripts/skrl/play.py \
     --task=UR5-Hierarchical-Depth-PPO \
     --num_envs 2 \
-    --enable_cameras
+    --enable_cameras \
+    --checkpoint logs/skrl/logs/skrl_hierarchical_depth/v1/checkpoints/best_agent.pt
 ```
 
 ### Evaluation Arguments
@@ -340,7 +341,8 @@ for n in 1 2 4 8; do
     python scripts/skrl/play.py \
         --task=UR5-Hierarchical-Depth-PPO \
         --num_envs $n \
-        --enable_cameras
+        --enable_cameras \
+        --checkpoint logs/skrl/logs/skrl_hierarchical_depth/v1/checkpoints/best_agent.pt
 done
 ```
 
