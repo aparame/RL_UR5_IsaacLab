@@ -294,7 +294,7 @@ class UR5WaypointLowLevelEnv(
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.previous_actions.copy_(self.actions)
-        self.actions = actions.clone().clamp(-1.0, 1.0) * self.cfg.action_scale
+        self.actions = actions.clone().float().clamp(-1.0, 1.0) * self.cfg.action_scale
 
         self._command_time_left -= self.physics_dt
         expired_mask = self._command_time_left <= 0.0
@@ -526,7 +526,7 @@ class UR5HierarchicalGrayDepthEnv(
         ).repeat(self.num_envs, 1)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self.actions = actions.clone().clamp(-1.0, 1.0)
+        self.actions = actions.clone().float().clamp(-1.0, 1.0)
 
         self._command_time_left -= self.physics_dt
         expired_mask = self._command_time_left <= 0.0
