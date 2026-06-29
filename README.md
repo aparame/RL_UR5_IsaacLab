@@ -1,8 +1,9 @@
 # Obstacle Avoidance with Vision-Based RL for Manipulators in Isaac Lab
 
 <div align="center">
-  <img src="gifs/training_view.gif" width="49%">
-  <img src="gifs/camera_view.gif" width="49%">
+  <img src="gifs/training_view.gif" width="80%">
+  <br><br>
+  <img src="gifs/camera_view.gif" width="80%">
 </div>
 
 
