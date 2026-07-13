@@ -12,7 +12,21 @@ import os
 import urllib.parse
 import urllib.request
 
-TOKEN = "REMOVED_TOKEN"
+def get_github_token() -> str:
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+    if token:
+        return token
+    cred_file = os.path.expanduser("~/.git-credentials")
+    if os.path.exists(cred_file):
+        with open(cred_file, "r") as f:
+            for line in f:
+                if "github.com" in line and ":" in line and "@" in line:
+                    token_part = line.split("@")[0].split(":")[-1]
+                    if token_part:
+                        return token_part
+    return ""
+
+TOKEN = get_github_token()
 TAG = "v1.0.0-checkpoints"
 REPOS = ["aparame/RL_UR5_Private", "aparame/RL_UR5_IsaacLab"]
 
