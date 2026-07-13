@@ -126,17 +126,17 @@ agent:
   grad_norm_clip: 1.0
   ratio_clip: 0.2
   value_clip: 0.2
-  entropy_loss_scale: 0.003
+  entropy_loss_scale: 0.01
   clip_predicted_values: true
   value_loss_scale: 1.0
   kl_threshold: 0.01
-  rewards_shaper: 1.0
+  rewards_shaper: null
   time_limit_bootstrap: true
   mixed_precision: true
   experiment:
     directory: /home/adi2440/Desktop/RL_UR5_IsaacLab/logs/skrl/logs/skrl_hierarchical_depth
-    experiment_name: 2026-06-08_10-28-36_ppo_torch_UR5_Hierarchical_GrayDepth
-    write_interval: 100
+    experiment_name: 2026-06-14_22-27-10_ppo_torch_UR5_Hierarchical_GrayDepth
+    write_interval: 128
     checkpoint_interval: 50000
     wandb: true
     wandb_kwargs:
