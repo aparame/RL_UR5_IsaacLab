@@ -21,6 +21,7 @@ This project implements vision-based reinforcement learning for the UR5 robotic 
 
 ## 📋 Table of Contents
 - [Installation](#installation)
+- [Model Checkpoints & Auto-Downloads](#-model-checkpoints--auto-downloads)
 - [Training](#training)
 - [Hierarchical Waypoint RL](#hierarchical-waypoint-rl)
 - [Evaluation](#evaluation)
@@ -180,6 +181,29 @@ ${ISAACSIM_PATH}/isaac-sim.sh --reset-user
 ```
 
 If you prefer not to build from source, you can use pre-built packages for Isaac Sim (not covered here) or follow the Isaac Lab pip/binaries installation guides linked in the official docs.
+
+---
+
+## 📦 Model Checkpoints & Auto-Downloads
+
+To preserve Git repository storage and avoid Git LFS budget limitations, heavy model checkpoints (`.pt` files) are hosted directly on **[GitHub Releases](https://github.com/aparame/RL_UR5_IsaacLab/releases/tag/v1.0.0-checkpoints)** (release tag: `v1.0.0-checkpoints`).
+
+### Automatic Fetching
+When you run evaluation scripts (`scripts/skrl/play.py`) or training resume commands (`scripts/skrl/train.py --checkpoint ...`), any missing checkpoint is **automatically downloaded** from the GitHub Release directly into the local `logs/` directory on-demand.
+
+### Manual Download & Pre-fetching
+To download all or specific model checkpoints prior to running evaluation:
+
+```bash
+# Download all registered model checkpoints into local logs/
+python scripts/utils/download_checkpoints.py --all
+
+# Download a specific model checkpoint by key
+python scripts/utils/download_checkpoints.py --key hierarchical_depth_v1
+```
+
+You can also download binary weights directly from the GitHub Releases release page:  
+🔗 **[v1.0.0-checkpoints Release Page](https://github.com/aparame/RL_UR5_IsaacLab/releases/tag/v1.0.0-checkpoints)**
 
 ---
 
